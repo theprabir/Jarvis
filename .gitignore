@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Virtual environments
+.venv/
+venv/
+
+# Secrets and environment files
+.env
+.env.*
+!.env.example
+
+# Logs and caches
+logs/
+cache/
+*.log
+
+# Generated databases and user data
+data/jarvis.db
+data/jarvis.db-*
+data/memory.json
+
+# Models and large binaries
+models/*.gguf
+models/*.bin
+
+# IDE and OS files
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+
+# Freebuff desktop metadata
+.freebuff/

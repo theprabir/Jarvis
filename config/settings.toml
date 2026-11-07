@@ -1,0 +1,45 @@
+# JARVIS configuration (Phase 1)
+#
+# This file is the single source of truth for runtime settings.
+# Unknown keys are rejected on purpose so typos fail fast.
+
+[app]
+name = "JARVIS"
+log_level = "INFO"
+# Relative paths are resolved against the project root.
+log_dir = "logs"
+
+[llama]
+# llama-server.exe from the existing llama.cpp installation (found on PATH).
+executable = "llama-server"
+model_path = "models/Llama-3.2-1B-Instruct-Q4_K_M.gguf"
+host = "127.0.0.1"
+port = 8080
+# Starting values from the specification; benchmark before increasing.
+context_size = 2048
+threads = 2
+threads_batch = 2
+batch_size = 64
+ubatch_size = 64
+parallel_slots = 1
+gpu_layers = 0
+# Seconds to wait for /health after launching the server.
+startup_timeout_s = 120.0
+# Reuse an already running server on this port instead of launching one.
+auto_start = true
+
+[llm]
+connect_timeout_s = 5.0
+# Read timeout must exceed the slowest measured prefill (31.9 s for 301
+# tokens) plus generation time on this CPU.
+read_timeout_s = 120.0
+max_tokens = 50
+temperature = 0.2
+max_retries = 1
+
+[tts]
+enabled = true
+rate = 175
+volume = 1.0
+# Empty string = Windows default voice. An installed SAPI voice id may be used.
+voice = ""

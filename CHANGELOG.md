@@ -4,6 +4,144 @@ All notable changes to JARVIS are recorded here. Versions follow the project
 convention: each completed feature set increments the patch number; completing
 all feature sets in a phase increments the middle number and resets the patch.
 
+## v0.1.2 — 2026-11-08
+
+**Feature set 4.2 — Conversation Intelligence** (Phase 3; implemented and
+verified).
+
+### Implemented functionality
+
+- **Multi-turn conversation** — `core/assistant.py` sends the recent exchanges
+  with every request through `core/conversation.py`, so follow-ups, pronouns
+  and references resolve against what was already said. Verified end to end:
+  "My name is Alex." then "What is my name?" answered "Your name is Alex."
+- **Context compression** — the oldest turns are summarized by the model once
+  the transcript passes `summarize_after`, with an extractive fallback when the
+  summary call fails. `max_context_chars` caps the transcript and `max_turns`
+  caps the verbatim exchanges, keeping requests inside the 2048-token context.
+- **Answer modes** — `short` (50 tokens), `detailed` (120) and `technical`
+  (160); each mode changes both the token budget and the system instruction.
+  Switch at runtime with `/mode`.
+- **Persistent conversation history** — `core/history.py` writes every completed
+  exchange to SQLite (`data/jarvis.db`, table `conversations` with session id,
+  messages, mode and timestamp), and `/history` reads the current session back.
+- **Clarification and uncertainty** — the system prompt makes the model ask one
+  short question instead of inventing details, and a short request containing a
+  dangling reference ("what about that?") with no history gets a deterministic
+  clarification question without calling the model.
+- **Graceful failures** — connection, timeout and malformed-response errors
+  produce spoken-safe sentences; failed exchanges are reported but never stored
+  as answers.
+- **Commands** — `/new` (fresh conversation and session), `/mode`, `/history`
+  and `/help`, available in both text and voice mode.
+- **Config** — new validated `[conversation]` section (mode, turn and char
+  budgets, per-mode token limits, history path, on/off switch).
+
+### Files created
+
+`core/conversation.py`, `core/history.py`, `core/assistant.py`,
+`tests/test_conversation.py`.
+
+### Files modified
+
+`core/config.py` (+`ConversationConfig`, validation, settings wiring),
+`config/settings.toml` (+`[conversation]`), `main.py` (uses `Assistant` for text
+and voice), `voice/interface.py` (takes a reply callable instead of owning the
+prompt), `README.md`, `.gitignore` (history database already ignored),
+`CHANGELOG.md`.
+
+### Bug fixes
+
+- **Context-dependent questions were answered blind** — every request used to be
+  a single independent prompt, so follow-ups like "what is my name?" lost the
+  earlier exchange. History now travels with each request.
+- **Context overflow** — transcripts are capped by turn count and character
+  budget before they are sent, instead of silently eating the reply budget.
+
+### Testing status
+
+- 66 unit tests pass (`python -m unittest discover -s tests -v`); the new suite
+  covers context assembly, mode instructions and budgets, context trimming,
+  summarization and its fallback, commands, clarification, SQLite persistence,
+  disabled-conversation mode and the three failure messages.
+- End-to-end `main.py --text --no-tts` run: introduced a name, asked a follow-up
+  (correct answer), switched to detailed mode, printed `/history`, and persisted
+  both exchanges to `data/jarvis.db` under one session id.
+- Not verified by ear in voice mode; `/mode`, `/history` and `/new` reach the
+  model through the same `Assistant.reply` path the voice interface calls.
+
+## v0.1.1 — 2026-11-08
+
+**Feature set 4.1 — Voice Interface** (Phase 2; implemented and verified).
+
+### Implemented functionality
+
+- **Push-to-talk capture** — `voice/audio.py` records 16 kHz mono 16-bit PCM in
+  30 ms frames through `sounddevice`, resampling linearly when the device only
+  opens at 44.1/48 kHz. A configurable global hotkey (`ctrl+space`),
+  Enter on an empty console line, or typing works at any time.
+- **VAD segmentation** — WebRTC VAD (`vad_aggressiveness` 0–3) starts a request
+  on speech, keeps a 300 ms pre-roll so the first syllable is not clipped, ends
+  it after `silence_ms`, rejects clicks under `min_speech_ms` and caps capture
+  at `max_record_s`.
+- **Offline transcription** — `voice/stt.py` loads the Vosk small English model
+  once and transcribes each utterance locally; no audio leaves the machine.
+- **Interruptible speech** — `voice/tts.py` drives `SAPI.SpVoice` directly
+  through COM instead of creating a `pyttsx3` engine per reply. One persistent
+  voice object, asynchronous `Speak`, and purge-based cancellation: Escape or
+  a new push-to-talk stops playback (measured interrupt at 0.77 s) for
+  barge-in.
+- **Voice conversation loop** — `voice/interface.py` owns all audio, speech and
+  LLM calls on one thread; the hotkey and console reader only set flags or
+  queue text, so nothing is used from two threads. Spoken `exit`/`quit`/`bye`
+  shut down, `/stop` and `/voices` are supported, and typed input is accepted
+  in the same session.
+- **Graceful degradation** — a missing Vosk model, unavailable microphone, SAPI
+  failure or missing `keyboard` package is logged and JARVIS falls back to text
+  mode (or console-Enter recording) instead of crashing.
+- **CLI flags** — `--voice` (force voice), `--text` (microphone off) and
+  `--no-tts` (listen without speaking), plus the new `[voice]` config section
+  with validation for every value.
+
+### Files created
+
+`voice/__init__.py`, `voice/errors.py`, `voice/audio.py`, `voice/stt.py`,
+`voice/tts.py`, `voice/interface.py`, `tests/test_voice.py`.
+
+### Files modified
+
+`core/config.py` (+`VoiceConfig`, validation, settings wiring),
+`config/settings.toml` (+`[voice]`), `main.py` (shared SAPI voice, voice/text
+mode selection, fallbacks), `requirements.txt` (+comtypes, numpy, sounddevice,
+webrtcvad-wheels, vosk, keyboard; −pyttsx3), `.gitignore` (+Vosk model and
+model archives), `README.md`.
+
+### Bug fixes
+
+- **Speech start-up latency** — the old `speak()` initialized a fresh pyttsx3
+  engine per utterance (~3.5 s before the first word) and could not be
+  interrupted. The shared SAPI voice removes the per-reply cost and supports
+  barge-in.
+- **Ambient noise misread as speech** — utterance boundaries come from VAD plus
+  a minimum speech duration and pre-roll, so a door click or breath no longer
+  sends an empty request to the model.
+
+### Testing status
+
+- 41 unit tests pass (`python -m unittest discover -s tests -v`), including
+  VAD silence/max-duration/no-speech/pre-roll cases, 44.1→16 kHz resampling,
+  device resolution, speech text cleanup, SAPI rate mapping and a real Vosk
+  transcription of silence.
+- Live checks on the target machine: default microphone probes and opens at
+  16 kHz; 2 s of ambient audio correctly produced `no_speech`; Vosk model load
+  raised the voice process to 172 MB RSS (195 MB with SAPI and the audio
+  stack); SAPI voices David and Zira detected; a spoken test sentence completed
+  in 3.5 s and was interrupted on demand in 0.77 s.
+- End-to-end `main.py --text --no-tts` run starts llama-server, prints replies
+  and exits cleanly (exit code 0).
+- Not verified: speech audio quality by ear and real spoken commands (they
+  require the user at the microphone).
+
 ## v0.1.0 — 2026-11-07
 
 **Phase 1 — Existing System Stabilization** (feature sets 1.1–1.4: configuration,

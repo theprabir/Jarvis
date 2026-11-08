@@ -1,4 +1,4 @@
-# JARVIS configuration (Phase 1)
+# JARVIS configuration
 #
 # This file is the single source of truth for runtime settings.
 # Unknown keys are rejected on purpose so typos fail fast.
@@ -43,3 +43,38 @@ rate = 175
 volume = 1.0
 # Empty string = Windows default voice. An installed SAPI voice id may be used.
 voice = ""
+
+[voice]
+# Offline voice interface: Vosk small English model plus WebRTC VAD.
+# Set enabled = false (or run with --text) for a keyboard-only session.
+enabled = true
+# Empty string = system default microphone; otherwise a name substring.
+input_device = ""
+# Global push-to-talk hotkey. Enter on an empty console line also records.
+ptt_key = "ctrl+space"
+# 0 = permissive with noise, 3 = aggressive noise rejection.
+vad_aggressiveness = 2
+# Trailing silence that ends a request, and the shortest click kept as speech.
+silence_ms = 900
+min_speech_ms = 250
+max_record_s = 15.0
+# Vosk model directory; relative paths resolve against the project root.
+stt_model = "models/vosk-model-small-en-us-0.15"
+
+[conversation]
+# Multi-turn context: recent exchanges are sent with every request; older ones
+# are compressed into a short summary instead of silently dropped.
+enabled = true
+# Default answer style: short, detailed or technical (change with /mode).
+mode = "short"
+# Verbatim exchanges kept in context, and when older ones get summarized.
+max_turns = 8
+summarize_after = 12
+# Character budget for the messages sent to the model (context is 2048 tokens).
+max_context_chars = 3500
+# Per-mode reply limits; this CPU generates roughly 5-10 tokens per second.
+short_max_tokens = 50
+detailed_max_tokens = 120
+technical_max_tokens = 160
+# SQLite file for persisted exchanges (git-ignored).
+history_db = "data/jarvis.db"

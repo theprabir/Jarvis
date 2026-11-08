@@ -1,8 +1,8 @@
-"""JARVIS entry point: bootstrap, CLI loop and speech output.
+"""JARVIS entry point: bootstrap, conversation loop and speech.
 
-Phase 1 responsibilities only: load configuration, start or reuse the local
-llama-server, speak replies, and shut everything down cleanly. Intent
-routing, tools and voice input arrive in later phases.
+Phase 1 delivered configuration, the llama-server lifecycle and the text
+CLI. Feature set 4.1 adds an offline voice interface: push-to-talk VAD
+capture, Vosk transcription and interruptible SAPI speech.
 """
 
 from __future__ import annotations
@@ -12,56 +12,49 @@ import dataclasses
 import logging
 import sys
 
-import pyttsx3
-
 from brain.llm_client import close_client
 from core.brain import ask_brain
 from core.config import ConfigError, load_settings
 from core.logger import setup_logging
+from core.assistant import Assistant
 from core.server_manager import LlamaServer, ServerError
+from voice.errors import SpeechError, VoiceError
+from voice.tts import WindowsVoice
 
 log = logging.getLogger(__name__)
-
-SYSTEM_PROMPT = (
-    "You are Jarvis, a helpful personal AI assistant. Answer the user's"
-    " questions directly and accurately. Never refuse a safe, normal factual"
-    " question. Keep answers under 2 sentences."
-)
 
 EXIT_COMMANDS = {"exit", "quit", "bye"}
 
 
-def speak(text, tts_config):
-  """Print and speak the given text using Windows SAPI5."""
+def build_speaker(settings):
+  """Create the persistent SAPI voice, or None when speech is disabled."""
+  if not settings.tts.enabled:
+    return None
+  try:
+    speaker = WindowsVoice(settings.tts)
+  except SpeechError as exc:
+    log.error("Speech output unavailable: %s", exc)
+    print(f"[Warning] Speech output disabled: {exc}")
+    return None
+  log.info("Speech output ready: %s", speaker.description or "default voice")
+  return speaker
+
+
+def speak(text, speaker):
+  """Print and speak a reply; speech errors never end the session."""
   print(f"Jarvis: {text}")
-  if not tts_config.enabled:
+  if speaker is None:
     return
   try:
-    engine = pyttsx3.init("sapi5")
-    engine.setProperty("rate", tts_config.rate)
-    engine.setProperty("volume", tts_config.volume)
-    if tts_config.voice:
-      engine.setProperty("voice", tts_config.voice)
-    engine.say(text)
-    engine.runAndWait()
-    engine.stop()
-  except Exception as exc:  # SAPI/COM failures must not kill the assistant
+    speaker.speak(text)
+  except SpeechError as exc:
     log.error("Text-to-speech failed: %s", exc)
 
 
-def run_cli(settings):
-  server = LlamaServer(settings.llama, settings.app.log_dir)
-  try:
-    server.ensure_running()
-  except ServerError as exc:
-    log.error("LLM server unavailable: %s", exc)
-    print(f"[Error] {exc}")
-    return 1
-
-  tts_config = settings.tts
-  speak("Jarvis online, sir. Systems operational.", tts_config)
-  print("\n[Jarvis CLI Active] Type your commands below (Type 'exit' to quit).\n")
-
+def run_cli(settings, speaker, assistant):
+  """Typed conversation loop; also the fallback when voice mode is off."""
+  print("\n[Jarvis CLI Active] Type your message below (Type 'exit' to quit).\n")
+  speak("Jarvis online, sir. Systems operational.", speaker)
   try:
     while True:
       try:
@@ -70,29 +63,68 @@ def run_cli(settings):
         break
       if not user_input:
         continue
-
       if user_input.lower() in EXIT_COMMANDS:
-        speak("Shutting down systems, sir. Goodbye.", tts_config)
+        speak("Shutting down systems, sir. Goodbye.", speaker)
         break
-
-      reply = ask_brain(user_input, SYSTEM_PROMPT)
-      speak(reply, tts_config)
+      speak(assistant.reply(user_input), speaker)
       print("-" * 50)
   except KeyboardInterrupt:
     print("\nJarvis: Shutting down.")
+  return 0
+
+
+def run(settings):
+  server = LlamaServer(settings.llama, settings.app.log_dir)
+  try:
+    server.ensure_running()
+  except ServerError as exc:
+    log.error("LLM server unavailable: %s", exc)
+    print(f"[Error] {exc}")
+    return 1
+
+  speaker = build_speaker(settings)
+  assistant = Assistant(settings)
+  try:
+    if settings.voice.enabled:
+      # Imported here so text-only sessions never load numpy/sounddevice/vosk.
+      from voice.interface import build_voice
+
+      try:
+        interface = build_voice(settings, assistant.reply, tts=speaker)
+      except VoiceError as exc:
+        log.warning("Voice interface unavailable: %s", exc)
+        print(f"[Warning] Voice unavailable ({exc}); using text mode.")
+      else:
+        return interface.run()
+    return run_cli(settings, speaker, assistant)
+  except KeyboardInterrupt:
+    print("\nJarvis: Shutting down.")
+    return 0
   finally:
     close_client()
     server.stop()
-  return 0
+    assistant.close()
+    if speaker is not None:
+      speaker.close()
 
 
 def main(argv=None):
   parser = argparse.ArgumentParser(description="JARVIS voice assistant")
   parser.add_argument("--config", default=None, help="path to settings.toml")
   parser.add_argument(
-      "--no-tts", action="store_true", help="text only, no speech output"
+      "--voice", action="store_true", help="force voice mode on"
+  )
+  parser.add_argument(
+      "--text", action="store_true", help="disable the microphone, text only"
+  )
+  parser.add_argument(
+      "--no-tts", action="store_true", help="keep listening, mute speech output"
   )
   args = parser.parse_args(argv)
+
+  if args.voice and args.text:
+    print("[Error] --voice and --text are mutually exclusive")
+    return 2
 
   try:
     settings = load_settings(args.config)
@@ -107,8 +139,13 @@ def main(argv=None):
     settings = dataclasses.replace(
         settings, tts=dataclasses.replace(settings.tts, enabled=False)
     )
+  if (args.voice or args.text) and settings.voice.enabled != args.voice:
+    settings = dataclasses.replace(
+        settings,
+        voice=dataclasses.replace(settings.voice, enabled=args.voice),
+    )
 
-  return run_cli(settings)
+  return run(settings)
 
 
 if __name__ == "__main__":

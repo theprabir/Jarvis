@@ -4,6 +4,77 @@ All notable changes to JARVIS are recorded here. Versions follow the project
 convention: each completed feature set increments the patch number; completing
 all feature sets in a phase increments the middle number and resets the patch.
 
+## v0.1.3 — 2026-11-08
+
+**Feature set 4.3 — Basic Intelligence** (Phase 3; implemented and verified),
+plus two conversation additions on top of 4.2.
+
+### Implemented functionality
+
+- **Deterministic intent recognition** — `core/intents.py` classifies clock,
+  calendar, arithmetic and slash-command requests before any model call. The
+  router returns nothing for open-ended or ambiguous input, so the LLM remains
+  the fallback for anything it cannot answer exactly.
+- **Local answers** — current time, current/relative dates and pure arithmetic
+  are answered by Python instantly and exactly ("what is 17 times 24?" → "That
+  is 408." with zero model calls).
+- **Safe calculator** — `core/calculator.py` evaluates arithmetic with a
+  restricted AST walker: numbers, parentheses and `+ - * / // % **` only, with
+  length, exponent and magnitude limits. Names, calls and attribute access are
+  rejected, so nothing is executed.
+- **Entity extraction and date interpretation** — `core/dates.py` resolves
+  today/tomorrow/yesterday, "in N days", "N weeks ago", "next/last weekday"
+  and ISO dates into a target date and offset; entities travel with the intent.
+- **Structured JSON with validation** — `Intent` serializes to JSON
+  (`intent`, `confidence`, `entities`, `source`) and `Intent.from_dict`
+  validates untrusted payloads (known intent name, confidence 0-1, flat
+  primitive entities, known source). `/intent TEXT` exposes it for inspection.
+- **Confidence gating and logging** — intents below 0.7 confidence are not
+  answered locally, and every local answer logs its intent and confidence.
+- **Session resume** — with `resume_last_session = true` the latest SQLite
+  session is reloaded at startup (up to `max_turns` exchanges) and continued,
+  so context and session id survive a restart.
+- **Confirmed `/forget`** — reports the number of saved exchanges, requires
+  `/forget confirm`, then deletes every saved exchange, resets the in-memory
+  conversation and starts a new session. A second confirmation without a
+  pending request deletes nothing.
+
+### Files created
+
+`core/intents.py`, `core/calculator.py`, `core/dates.py`,
+`tests/test_intelligence.py`.
+
+### Files modified
+
+`core/assistant.py` (intent routing before clarification, local answers,
+resume, `/forget`, `/intent`), `core/history.py` (`last_session_id`,
+`session_turns`, `clear`), `core/config.py` (+`resume_last_session`),
+`config/settings.toml`, `README.md`, `CHANGELOG.md`.
+
+### Bug fixes
+
+- **Valid short questions were mistaken for missing context** — "what time is
+  it?" contains the word "it", so the clarification gate replied "I don't have
+  earlier context" instead of answering. Deterministic intents are now matched
+  before the clarification check.
+- **Context was lost on every restart** — history exists for the audit trail
+  only; resume now reloads the previous session's turns into the prompt.
+
+### Testing status
+
+- 105 unit tests pass (`python -m unittest discover -s tests -v`): calculator
+  limits and rejection of code-like input, date phrases (including
+  day-after-tomorrow precedence and ISO dates), router coverage and fallbacks,
+  JSON validation failures, local answers, `/intent`, resume (including
+  `max_turns` limiting and the disabled case) and `/forget` confirmation rules.
+- End-to-end run 1 (fresh database): introduction, "what is 17 times 24?" →
+  "That is 408.", clock and tomorrow's date answered locally, `/intent` printed
+  `{"confidence": 0.92, "entities": {"date": "2026-11-09", ...}, "intent":
+  "date", ...}`, and an open question answered by the model.
+- End-to-end run 2 (restart): resumed the previous session, answered "Your name
+  is Alex." from context, then `/forget` + `/forget confirm` removed 6 saved
+  exchanges; the database reported `count= 0` afterwards.
+
 ## v0.1.2 — 2026-11-08
 
 **Feature set 4.2 — Conversation Intelligence** (Phase 3; implemented and

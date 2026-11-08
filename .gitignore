@@ -36,3 +36,9 @@ desktop.ini
 
 # Freebuff desktop metadata
 .freebuff/
+
+
+#Agent Files
+AGENTS.md
+PLANS-STACK-FEATURES.md
+PROJECT_AUDIT.md

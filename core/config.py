@@ -91,6 +91,7 @@ class VoiceConfig:
 @dataclass(frozen=True)
 class ConversationConfig:
   enabled: bool = True
+  resume_last_session: bool = True
   mode: str = "short"
   max_turns: int = 8
   summarize_after: int = 12

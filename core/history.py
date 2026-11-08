@@ -79,6 +79,39 @@ class HistoryStore:
         for user, assistant, created in reversed(rows)
     ]
 
+  def last_session_id(self):
+    """Return the session id of the most recent exchange, if any."""
+    try:
+      row = self._db.execute(
+          "SELECT session_id FROM conversations ORDER BY id DESC LIMIT 1"
+      ).fetchone()
+    except sqlite3.Error as exc:
+      raise HistoryError(f"Could not read the last session: {exc}") from exc
+    return row[0] if row else None
+
+  def session_turns(self, session_id, limit=8):
+    """Return the latest exchanges of one session, oldest first."""
+    try:
+      rows = self._db.execute(
+          "SELECT user_message, assistant_message FROM conversations"
+          " WHERE session_id = ? ORDER BY id DESC LIMIT ?",
+          (session_id, max(1, int(limit))),
+      ).fetchall()
+    except sqlite3.Error as exc:
+      raise HistoryError(f"Could not read the session: {exc}") from exc
+    return [
+        {"user": user, "assistant": assistant}
+        for user, assistant in reversed(rows)
+    ]
+
+  def clear(self):
+    """Delete every saved exchange."""
+    try:
+      self._db.execute("DELETE FROM conversations")
+      self._db.commit()
+    except sqlite3.Error as exc:
+      raise HistoryError(f"Could not delete history: {exc}") from exc
+
   def count(self):
     try:
       return int(self._db.execute("SELECT COUNT(*) FROM conversations")

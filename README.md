@@ -5,12 +5,14 @@ around a small local LLM (Llama 3.2 1B Instruct Q4_K_M) served by the existing
 `llama-server.exe` from llama.cpp. The model is the language interface;
 deterministic Python modules do the audio, routing and tool work.
 
-**Current status:** Phase 1 (stabilization), feature set **4.1 Voice
-Interface** and feature set **4.2 Conversation Intelligence** complete. JARVIS
-listens through the microphone with push-to-talk, transcribes offline with
-Vosk, answers with the local model using multi-turn context, and speaks through
-an interruptible Windows SAPI voice. Tools and skills follow in feature sets
-4.3+ (see `PLANS-STACK-FEATURES.md`, `CHANGELOG.md`).
+**Current status:** Phase 1 (stabilization) and feature sets **4.1 Voice
+Interface**, **4.2 Conversation Intelligence** and **4.3 Basic Intelligence**
+complete. JARVIS listens through the microphone with push-to-talk, transcribes
+offline with Vosk, keeps multi-turn context across restarts, answers simple
+questions deterministically through Python, falls back to the local model for
+everything else, and speaks through an interruptible Windows SAPI voice. Tools
+and skills follow in feature sets 4.4+ (see `PLANS-STACK-FEATURES.md`,
+`CHANGELOG.md`).
 
 ## Requirements
 
@@ -84,6 +86,22 @@ Completed exchanges are written to `history_db` (`data/jarvis.db`, table
 that?") without any history asks for clarification instead of guessing, and a
 model failure produces a spoken sentence without being stored as an answer.
 
+With `resume_last_session = true` the most recent saved session is reloaded at
+startup, so JARVIS picks up the same conversation and session id after a
+restart. `/forget` reports how many exchanges are saved and deletes them only
+after `/forget confirm`.
+
+### Deterministic answers
+
+Questions Python can answer never reach the model: current time, current or
+relative date ("tomorrow", "in 3 days", "next monday", ISO dates) and pure
+arithmetic ("what is 17 times 24?") are recognized by `core/intents.py` and
+answered locally, which is instant and exact. Arithmetic runs through a
+restricted AST walker (`core/calculator.py`) that accepts only numbers,
+parentheses and operators, so no Python code is executed. `/intent TEXT` prints
+the detected intent as validated JSON (`intent`, `confidence`, `entities`,
+`source`); anything ambiguous or open-ended falls back to the model.
+
 The server is launched with:
 
 ```text
@@ -111,8 +129,9 @@ Voice mode is the default. JARVIS prints a short greeting, then waits:
   the same conversation state.
 - `/stop` clears a pending interrupt and `/voices` lists installed SAPI voices.
 - `/new` starts a fresh conversation, `/mode short|detailed|technical` changes
-  how much JARVIS says, `/history` shows recent exchanges and `/help` lists the
-  commands.
+  how much JARVIS says, `/history` shows recent exchanges, `/intent TEXT` shows
+  the detected intent as JSON, `/forget` deletes saved history after
+  confirmation, and `/help` lists the commands.
 - `exit`, `quit`, `bye` (typed or spoken) shut down; Ctrl-C also exits cleanly.
 
 Flags:
@@ -147,7 +166,8 @@ startup time, prefill and generation speed, and total latency.
 
 The suite runs offline and needs no microphone or speaker: configuration,
 conversation context, context trimming, summarization, answer modes, commands,
-clarification, SQLite history, VAD segmentation, resampling, device resolution,
+clarification, SQLite history/resume/deletion, intent routing, arithmetic and
+date parsing, JSON validation, VAD segmentation, resampling, device resolution,
 speech text cleanup and SAPI rate mapping. The Vosk transcription test is
 skipped when the model is absent.
 
@@ -163,6 +183,9 @@ core/brain.py           Single-shot prompt -> spoken-safe reply
 core/assistant.py       Conversation-aware replies, modes, history, commands
 core/conversation.py    Turns, compression summary and answer modes
 core/history.py         SQLite conversation history
+core/intents.py         Deterministic intent routing and JSON validation
+core/calculator.py      Restricted arithmetic evaluation
+core/dates.py           Date phrase interpretation
 core/benchmark.py       RAM and latency baseline
 brain/llm_client.py     Persistent HTTPX client
 brain/output_parser.py  Structured chat completion parsing
@@ -180,9 +203,11 @@ logs/                   Runtime logs (git-ignored)
 
 ## Known limitations
 
-- Conversation context lives in memory for the current session: a restart keeps
-  the saved history rows but does not reload earlier turns into the prompt yet
-  (long-term memory arrives in feature set 4.6).
+- Only the most recent session is resumed (`resume_last_session`); older
+  sessions stay in SQLite until `/forget` deletes them.
+- Intent recognition is deterministic pattern matching for time, dates,
+  arithmetic and commands. Broader intent classification and tool selection
+  grow with the tools added in feature sets 4.4 and later.
 - Summarization costs one extra model call once the transcript grows past
   `summarize_after`, which adds a few seconds on this CPU.
 - No tool registry, calculator, filesystem or system tools yet (feature set 4.3+).

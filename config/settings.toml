@@ -76,5 +76,7 @@ max_context_chars = 3500
 short_max_tokens = 50
 detailed_max_tokens = 120
 technical_max_tokens = 160
+# Load the most recent saved session at startup so context survives a restart.
+resume_last_session = true
 # SQLite file for persisted exchanges (git-ignored).
 history_db = "data/jarvis.db"

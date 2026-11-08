@@ -14,7 +14,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from brain.errors import LLMConnectionError
-from core.assistant import Assistant
+from core.assistant import CONTINUE_PROMPT, Assistant
 from core.calculator import CalculationError, evaluate, format_number
 from core.config import ConversationConfig, load_settings
 from core.dates import find_date_reference
@@ -357,6 +357,95 @@ class ForgetCommandTests(unittest.TestCase):
       self.assertEqual(store.count(), 0)
     finally:
       store.close()
+
+
+class FinishClient(FakeClient):
+  """Fake client that reports a chosen finish reason per call."""
+
+  def __init__(self, replies, finish_reasons):
+    super().__init__(replies)
+    self.finish_reasons = list(finish_reasons)
+
+  def chat(self, messages, max_tokens=None, temperature=None):
+    result = super().chat(
+        messages, max_tokens=max_tokens, temperature=temperature
+    )
+    reason = (
+        self.finish_reasons.pop(0)
+        if len(self.finish_reasons) > 1
+        else self.finish_reasons[0]
+    )
+    result.finish_reason = reason
+    return result
+
+
+class ContinuationTests(unittest.TestCase):
+  def setUp(self):
+    self.tmp = tempfile.TemporaryDirectory()
+    self.addCleanup(self.tmp.cleanup)
+    self.db = str(Path(self.tmp.name) / "history.db")
+
+  def build(self, client, **overrides):
+    settings = dataclasses.replace(
+        load_settings(),
+        conversation=ConversationConfig(history_db=self.db, **overrides),
+    )
+    assistant = Assistant(settings, client=client)
+    self.addCleanup(assistant.close)
+    return assistant
+
+  def test_truncated_reply_is_continued(self):
+    client = FinishClient(
+        ["The ocean covers most", " of the planet."],
+        ["length", "stop"],
+    )
+    assistant = self.build(client)
+    reply = assistant.reply("Tell me about the ocean")
+    self.assertEqual(reply, "The ocean covers most of the planet.")
+    self.assertEqual(len(client.calls), 2)
+    follow_up = client.calls[1]["messages"]
+    self.assertEqual(follow_up[-1]["content"], CONTINUE_PROMPT)
+    self.assertEqual(follow_up[-2]["role"], "assistant")
+    self.assertEqual(len(assistant.conversation.turns), 1)
+
+  def test_complete_reply_is_not_continued(self):
+    client = FinishClient(["A complete answer."], ["stop"])
+    assistant = self.build(client)
+    self.assertEqual(assistant.reply("hello"), "A complete answer.")
+    self.assertEqual(len(client.calls), 1)
+
+  def test_continuation_limit_is_configurable(self):
+    client = FinishClient(["part one", "part two"], ["length", "length"])
+    assistant = self.build(client, max_continuations=1)
+    self.assertEqual(assistant.reply("long question"), "part one part two")
+    self.assertEqual(len(client.calls), 2)
+
+  def test_no_continuation_when_disabled(self):
+    client = FinishClient(["cut"], ["length"])
+    assistant = self.build(client, max_continuations=0)
+    self.assertEqual(assistant.reply("hello"), "cut")
+    self.assertEqual(len(client.calls), 1)
+
+  def test_repeated_sentences_are_dropped(self):
+    client = FinishClient(
+        ["The cache is small.", "The cache is small. It sits near the CPU."],
+        ["length", "stop"],
+    )
+    assistant = self.build(client)
+    self.assertEqual(
+        assistant.reply("How does a cache help?"),
+        "The cache is small. It sits near the CPU.",
+    )
+
+  def test_parser_reports_finish_reason(self):
+    from brain.output_parser import parse_chat_completion
+
+    payload = {
+        "choices": [
+            {"message": {"content": "partial"}, "finish_reason": "length"}
+        ]
+    }
+    self.assertEqual(parse_chat_completion(payload).finish_reason, "length")
 
 
 if __name__ == "__main__":

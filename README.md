@@ -6,13 +6,14 @@ around a small local LLM (Llama 3.2 1B Instruct Q4_K_M) served by the existing
 deterministic Python modules do the audio, routing and tool work.
 
 **Current status:** Phase 1 (stabilization) and feature sets **4.1 Voice
-Interface**, **4.2 Conversation Intelligence** and **4.3 Basic Intelligence**
-complete. JARVIS listens through the microphone with push-to-talk, transcribes
-offline with Vosk, keeps multi-turn context across restarts, answers simple
-questions deterministically through Python, falls back to the local model for
-everything else, and speaks through an interruptible Windows SAPI voice. Tools
-and skills follow in feature sets 4.4+ (see `PLANS-STACK-FEATURES.md`,
-`CHANGELOG.md`).
+Interface**, **4.2 Conversation Intelligence**, **4.3 Basic Intelligence** and
+**4.4 Computer Interaction** complete. JARVIS listens through the microphone
+with push-to-talk, transcribes offline with Vosk, keeps multi-turn context
+across restarts, answers simple questions deterministically through Python,
+operates the computer through validated tools, falls back to the local model
+for everything else, and speaks through an interruptible Windows SAPI voice.
+Internet search and memory follow in feature sets 4.5+ (see
+`PLANS-STACK-FEATURES.md`, `CHANGELOG.md`).
 
 ## Requirements
 
@@ -55,6 +56,7 @@ All runtime settings live in `config/settings.toml`:
 | `[tts]` | Speech flag, rate (words/minute), volume, voice name substring |
 | `[voice]` | Voice mode flag, microphone, push-to-talk key, VAD, silence/record limits, Vosk model path |
 | `[conversation]` | Multi-turn context, answer mode, token limits, summarization, history database |
+| `[tools]` | File sandbox root, read/search limits, allowed applications and commands |
 
 Unknown keys are rejected so typos fail fast. Override the file location with
 `--config PATH` or the `JARVIS_CONFIG` environment variable.
@@ -77,9 +79,16 @@ Answer styles are set by `mode`, or at runtime with `/mode`:
 
 | Mode | Reply limit | Style |
 | --- | --- | --- |
-| `short` | 50 tokens | Two short sentences (default) |
-| `detailed` | 120 tokens | Complete answer with a short conclusion |
-| `technical` | 160 tokens | Precise terminology and mechanisms |
+| `short` | 90 tokens | Two short sentences (default) |
+| `detailed` | 250 tokens | Complete answer with a short conclusion |
+| `technical` | 320 tokens | Precise terminology and mechanisms |
+
+If a reply still reaches its token limit, JARVIS asks the model to
+continue where it stopped (`max_continuations`, default 1), joins the
+fragments and drops any sentence the model repeated, so an answer is not
+left half-written. The finish reason is logged with every reply. On this
+CPU generation runs at about 5 tokens/s, so a full detailed answer takes
+roughly 50 seconds.
 
 Completed exchanges are written to `history_db` (`data/jarvis.db`, table
 `conversations`). A short request that only refers to something ("what about
@@ -101,6 +110,37 @@ restricted AST walker (`core/calculator.py`) that accepts only numbers,
 parentheses and operators, so no Python code is executed. `/intent TEXT` prints
 the detected intent as validated JSON (`intent`, `confidence`, `entities`,
 `source`); anything ambiguous or open-ended falls back to the model.
+
+### Computer interaction
+
+Recognized computer requests are dispatched to the tools in `tools/` instead of
+the model:
+
+| Area | What JARVIS can do |
+| --- | --- |
+| System | CPU, memory, disk and battery status; top processes by memory |
+| Applications | Open allowlisted applications, close the windows of a named app, close all open application windows on request, open files, folders and http(s) websites |
+| Files | Read, write, create folders, rename, copy, move, delete, list and search — all inside `[tools] root` |
+| Terminal | Run allowlisted commands (`ipconfig`, `hostname`, `ping`, …) without a shell, with validated arguments |
+| Desktop | Screenshots into `screenshots/`, Windows notifications, list/focus/minimize/maximize windows |
+| Clipboard | Copy text, and read it after confirmation |
+
+Every tool declares argument names and types, a permission level and a
+timeout. The registry validates arguments and turns failures into spoken
+sentences. Anything that changes the machine — writing, deleting, moving,
+running a command, closing an application, reading the clipboard — asks first:
+"Say confirm to proceed, or cancel" (also `/confirm` and `/cancel`), and the
+prompt names what will be affected (for example the applications a
+close-all would touch). Reads, status queries, opening things, screenshots
+and notifications run immediately. `close_app` affects only the
+application named in the request: its visible windows are asked to close,
+so unsaved work prompts instead of being discarded, and a windowless
+instance is terminated only when that application was named explicitly.
+"Close all apps" (or "close all programs", "close everything") closes
+only applications with a visible window, never background, startup,
+system, shell or JARVIS processes.
+Destructive file actions cannot escape `[tools] root`, and applications and
+commands must be listed in `config/settings.toml`.
 
 The server is launched with:
 
@@ -130,8 +170,9 @@ Voice mode is the default. JARVIS prints a short greeting, then waits:
 - `/stop` clears a pending interrupt and `/voices` lists installed SAPI voices.
 - `/new` starts a fresh conversation, `/mode short|detailed|technical` changes
   how much JARVIS says, `/history` shows recent exchanges, `/intent TEXT` shows
-  the detected intent as JSON, `/forget` deletes saved history after
-  confirmation, and `/help` lists the commands.
+  the detected intent as JSON, `/tools` lists computer tools, `/confirm` and
+  `/cancel` approve or drop a pending action, `/forget` deletes saved history
+  after confirmation, and `/help` lists the commands.
 - `exit`, `quit`, `bye` (typed or spoken) shut down; Ctrl-C also exits cleanly.
 
 Flags:
@@ -167,9 +208,11 @@ startup time, prefill and generation speed, and total latency.
 The suite runs offline and needs no microphone or speaker: configuration,
 conversation context, context trimming, summarization, answer modes, commands,
 clarification, SQLite history/resume/deletion, intent routing, arithmetic and
-date parsing, JSON validation, VAD segmentation, resampling, device resolution,
-speech text cleanup and SAPI rate mapping. The Vosk transcription test is
-skipped when the model is absent.
+date parsing, JSON validation, tool argument validation, sandboxed file
+operations, app/command allowlists, confirmation flows, VAD segmentation,
+resampling, device resolution, speech text cleanup and SAPI rate mapping. The
+Vosk transcription test is skipped when the model is absent and desktop tools
+are only validated, never exercised, by the suite.
 
 ## Project layout
 
@@ -186,6 +229,13 @@ core/history.py         SQLite conversation history
 core/intents.py         Deterministic intent routing and JSON validation
 core/calculator.py      Restricted arithmetic evaluation
 core/dates.py           Date phrase interpretation
+tools/base.py           Tool schema, permissions, validation and registry
+tools/system.py         CPU, memory, disk, battery and process information
+tools/files.py          Sandboxed file and folder operations
+tools/apps.py           Allowlisted apps, URLs, paths and terminal commands
+tools/desktop.py        Screenshots, notifications and window control
+tools/clipboard.py      Clipboard read/write
+screenshots/            Screen captures (git-ignored)
 core/benchmark.py       RAM and latency baseline
 brain/llm_client.py     Persistent HTTPX client
 brain/output_parser.py  Structured chat completion parsing
@@ -206,17 +256,23 @@ logs/                   Runtime logs (git-ignored)
 - Only the most recent session is resumed (`resume_last_session`); older
   sessions stay in SQLite until `/forget` deletes them.
 - Intent recognition is deterministic pattern matching for time, dates,
-  arithmetic and commands. Broader intent classification and tool selection
-  grow with the tools added in feature sets 4.4 and later.
+  arithmetic, computer actions and commands. Unusual wording falls back to the
+  model, which cannot call tools yet.
+- `close_app` closes the windows of the named application and can leave a
+  background tray process running; `close_all_apps` only closes
+  applications with a visible window, so background and startup programs
+  stay untouched.
+- File tools are sandboxed to `[tools] root` (the project folder by default).
+  Point it at `D:\\` only if you want JARVIS to manage the whole drive.
 - Summarization costs one extra model call once the transcript grows past
   `summarize_after`, which adds a few seconds on this CPU.
-- No tool registry, calculator, filesystem or system tools yet (feature set 4.3+).
 - Speech recognition uses the small English Vosk model: English only, and
   noisy rooms or strong accents reduce accuracy. Raise `vad_aggressiveness`
   or set a specific `input_device` if the microphone picks up background noise.
 - Web search in `core/tools.py` is the legacy scraper; it returns unreliable
   results and is no longer used by `main.py`. It is rebuilt in Phase 4.
-- `max_tokens` is 50: measured generation speed on this CPU is ~3.7-4.2 tok/s,
-  so longer answers are impractically slow.
+- Generation runs at ~5 tok/s on this CPU, so a 250-token detailed answer
+  takes about 50 seconds; a reply that hits its limit is continued once,
+  not generated without bound.
 - Speech output is verified functionally (SAPI speaks, interruption at ~0.8 s),
   but audio quality and volume must be confirmed by ear on the target machine.

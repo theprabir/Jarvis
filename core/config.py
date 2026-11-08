@@ -96,14 +96,47 @@ class ConversationConfig:
   max_turns: int = 8
   summarize_after: int = 12
   max_context_chars: int = 3500
-  short_max_tokens: int = 50
-  detailed_max_tokens: int = 120
-  technical_max_tokens: int = 160
+  short_max_tokens: int = 90
+  detailed_max_tokens: int = 250
+  technical_max_tokens: int = 320
+  max_continuations: int = 1
   history_db: str = "data/jarvis.db"
 
   @property
   def resolved_history_db(self) -> Path:
     path = Path(self.history_db)
+    return path if path.is_absolute() else (PROJECT_ROOT / path).resolve()
+
+
+@dataclass(frozen=True)
+class ToolsConfig:
+  enabled: bool = True
+  root: str = "."
+  max_read_bytes: int = 200_000
+  search_limit: int = 20
+  max_search_depth: int = 4
+  command_timeout_s: float = 15.0
+  allowed_apps: tuple = (
+      "notepad",
+      "calc",
+      "mspaint",
+      "explorer",
+      "msedge",
+      "chrome",
+      "code",
+  )
+  allowed_commands: tuple = (
+      "ipconfig",
+      "whoami",
+      "systeminfo",
+      "tasklist",
+      "hostname",
+      "ping",
+  )
+
+  @property
+  def resolved_root(self) -> Path:
+    path = Path(self.root)
     return path if path.is_absolute() else (PROJECT_ROOT / path).resolve()
 
 
@@ -115,6 +148,7 @@ class Settings:
   tts: TtsConfig
   voice: VoiceConfig
   conversation: ConversationConfig
+  tools: ToolsConfig
 
 
 def _build(cls, data, section):
@@ -200,13 +234,37 @@ def _validate(settings):
   for mode in ("short", "detailed", "technical"):
     tokens = getattr(conversation, f"{mode}_max_tokens")
     _require(
-        10 <= tokens <= 400,
-        f"[conversation] {mode}_max_tokens must be 10-400",
+        20 <= tokens <= 600,
+        f"[conversation] {mode}_max_tokens must be 20-600",
     )
+  _require(
+      0 <= conversation.max_continuations <= 2,
+      "[conversation] max_continuations must be 0-2",
+  )
   _require(
       bool(conversation.history_db),
       "[conversation] history_db must not be empty",
   )
+
+  tools = settings.tools
+  _require(bool(tools.root), "[tools] root must not be empty")
+  _require(
+      1000 <= tools.max_read_bytes <= 5_000_000,
+      "[tools] max_read_bytes must be 1000-5000000",
+  )
+  _require(1 <= tools.search_limit <= 100, "[tools] search_limit must be 1-100")
+  _require(
+      1 <= tools.max_search_depth <= 10,
+      "[tools] max_search_depth must be 1-10",
+  )
+  _require(tools.command_timeout_s > 0, "[tools] command_timeout_s must be > 0")
+  for group in ("allowed_apps", "allowed_commands"):
+    names = getattr(tools, group)
+    _require(
+        isinstance(names, (list, tuple))
+        and all(isinstance(name, str) and name.strip() for name in names),
+        f"[tools] {group} must be a list of names",
+    )
 
 
 def load_settings(path=None):
@@ -238,6 +296,7 @@ def load_settings(path=None):
       conversation=_build(
           ConversationConfig, raw.get("conversation", {}), "conversation"
       ),
+      tools=_build(ToolsConfig, raw.get("tools", {}), "tools"),
   )
   _validate(settings)
   return settings

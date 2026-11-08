@@ -22,6 +22,9 @@ data/jarvis.db
 data/jarvis.db-*
 data/memory.json
 
+# Generated screenshots
+screenshots/
+
 # Models and large binaries
 models/*.gguf
 models/*.bin

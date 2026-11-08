@@ -4,6 +4,163 @@ All notable changes to JARVIS are recorded here. Versions follow the project
 convention: each completed feature set increments the patch number; completing
 all feature sets in a phase increments the middle number and resets the patch.
 
+## v0.1.5 — 2026-11-08
+
+**Fixes — complete replies and precise app closing** (on top of feature set
+4.4; implemented and verified).
+
+### Implemented functionality
+
+- **Reply budgets raised** — `short` 90, `detailed` 250 and `technical` 320
+  tokens (previously 50/120/160), so detailed answers reach their conclusion
+  instead of stopping mid-sentence. Validated range is 20-600 tokens.
+- **Automatic continuation** — `brain/output_parser.py` now reports the
+  server's `finish_reason`. When a reply ends because of the token limit,
+  JARVIS asks the model to continue exactly where it stopped
+  (`max_continuations`, default 1, range 0-2), joins the fragments with a
+  single space and drops sentences the model repeated. The finish reason is
+  logged with every reply.
+- **Named-only closing** — `close_app` now affects only the application named
+  in the request. It asks that application's visible windows to close with
+  `WM_CLOSE` (so unsaved work prompts instead of being destroyed) and only
+  terminates an instance when the named application has no window at all.
+- **Close-all** — new `close_all_apps` tool and intent for "close all apps",
+  "close all programs", "close everything", "close all", "quit all
+  applications" and "shut down all windows". It targets only applications with
+  a visible top-level window, once per process, and never background, startup,
+  system, shell or JARVIS's own processes. It always requires confirmation.
+- **Live confirmations** — `Tool.preview` renders what a destructive action
+  will actually touch (application names and window counts) instead of raw
+  arguments. `close_all_apps` is listed in `/tools`.
+
+### Files modified
+
+`core/assistant.py` (continuation loop, repeat dedupe, preview text),
+`core/config.py` (`ConversationConfig.max_continuations`, wider limits),
+`core/intents.py` (close-all intent, CPU phrase gate), `brain/output_parser.py`
+(`ChatResult.finish_reason`), `tools/base.py` (`Tool.preview`),
+`tools/apps.py` (close policy, `select_close_targets`, `close_all_apps`,
+previews, protected processes), `tools/desktop.py` (window PID enumeration,
+`request_close` via `WM_CLOSE`), `tools/__init__.py` (registrations, `preview`
+argument), `config/settings.toml`, `tests/test_conversation.py`,
+`tests/test_intelligence.py`, `tests/test_tools.py`, `README.md`,
+`CHANGELOG.md`.
+
+### Bug fixes
+
+- **Replies were cut mid-sentence** — the per-mode cap ended answers before
+  the conclusion and the truncated text was stored as if complete. Limits are
+  higher, truncation is detected and continued, and repeated continuation text
+  is removed.
+- **"Close notepad" terminated every instance** — including windows opened by
+  the user and any unsaved document. Closing now targets the named
+  application's windows and lets the application decide about unsaved work.
+- **"Explain what a CPU cache does" answered with CPU usage** — the word CPU
+  alone no longer triggers the system tool; a usage/load/status word is
+  required too.
+- Protected system, shell and JARVIS's own processes are refused or excluded,
+  so a close-all request cannot shut down Explorer, the terminal running
+  JARVIS or the assistant itself.
+
+### Testing status
+
+- 167 unit tests pass (`python -m unittest discover -s tests -v`): continuation
+  after truncation, no continuation after `stop`, configurable limit, disabled
+  continuation, repeat-sentence dedupe, parser `finish_reason`, updated mode
+  limits, close-all route phrases, close-all confirmation, and close-target
+  selection (only open apps, system/shell/own-process exclusion, one window per
+  process).
+- Real-model check: with `short_max_tokens` forced to 20, a reply hit the limit,
+  JARVIS requested one continuation and logged `length` for both calls; the
+  continuation repeated the first sentence, which the dedupe removed.
+- Hardware check: `close_app("notepad")` asked exactly one Notepad window to
+  close and the process exited; the `close_all_apps` preview listed only the
+  open Sticky Notes window and excluded VS Code, the shell and JARVIS's own
+  processes. The close-all path was previewed only, so no user application was
+  closed.
+- `python -m compileall` is clean; memory use is unchanged by these fixes
+  (token limits and window messages only).
+
+## v0.1.4 — 2026-11-08
+
+**Feature set 4.4 — Computer Interaction** (Phase 3; implemented and verified).
+
+### Implemented functionality
+
+- **Tool registry** — `tools/base.py`: every tool declares argument names and
+  types, a permission level (`safe` or `confirm`) and a timeout. The registry
+  validates arguments, runs handlers, and converts missing/unknown/wrong-type
+  arguments, refused actions and unexpected exceptions into spoken-safe
+  `ToolResult` sentences.
+- **System tools** — CPU, memory, disk and battery status plus top processes by
+  memory, all from `psutil`.
+- **Application and web tools** — open allowlisted applications, open files and
+  folders, open http(s) websites (scheme and host validated), and close
+  allowlisted applications.
+- **Terminal tools** — allowlisted commands (`ipconfig`, `whoami`, `systeminfo`,
+  `tasklist`, `hostname`, `ping`) run without a shell; arguments are split
+  safely, length-limited and rejected when they contain shell metacharacters.
+- **File tools** — read, write, create folders, rename, copy, move, delete,
+  list and search inside `[tools] root`. Paths are resolved and refused when
+  they escape that folder, reads are size-limited, search skips heavy folders
+  (`.git`, `.venv`, `models`, …) and deletion of the root itself is refused.
+- **Desktop tools** — screenshots saved under `screenshots/`, Windows tray
+  notifications, and window listing/focus/minimize/maximize through user32
+  with a PowerShell/.NET screenshot path (no new dependencies).
+- **Clipboard tools** — copy and read through tkinter; reading requires
+  confirmation.
+- **Confirmation flow** — assistant answers destructive requests with the tool
+  description and "Say confirm to proceed, or cancel"; yes/no, `/confirm` and
+  `/cancel` execute or drop it, and any other request clears the pending action.
+- **Intent routing** — natural-language patterns for every tool (system status,
+  open/close, files, search, clipboard, notifications, screenshots, windows,
+  commands) feed the 4.3 router; unrecognized phrasing falls back to the model.
+- **Commands** — `/tools` lists every tool with its permission level; `/confirm`
+  and `/cancel` drive pending actions.
+- **Config** — new validated `[tools]` section: sandbox root, read and search
+  limits, command timeout, allowed applications and allowed commands.
+
+### Files created
+
+`tools/__init__.py`, `tools/base.py`, `tools/system.py`, `tools/files.py`,
+`tools/apps.py`, `tools/desktop.py`, `tools/clipboard.py`,
+`tests/test_tools.py`.
+
+### Files modified
+
+`core/intents.py` (tool intents, entity extraction for apps/paths/files/
+commands/windows, router allowlists), `core/assistant.py` (tool dispatch,
+confirmation state, `/confirm`, `/cancel`, `/tools`), `core/config.py`
+(+`ToolsConfig`), `config/settings.toml` (+`[tools]`), `.gitignore`
+(+`screenshots/`), `README.md`, `CHANGELOG.md`.
+
+### Bug fixes and safety notes
+
+- **Ambiguous paths were unvalidated** — file, screenshot and clipboard paths
+  are resolved before use, so `../` traversal outside the sandbox is refused.
+- **Command execution avoided the shell** — arguments containing `&`, `|`, `>`,
+  `%` and similar characters are rejected, so a permitted command cannot be
+  chained into an unpermitted one.
+- `close_app` terminates every running instance of an allowlisted application;
+  this is documented in the README and the confirmation text now says so.
+
+### Testing status
+
+- 156 unit tests pass (`python -m unittest discover -s tests -v`): registry
+  validation and failure containment, file read/write/list/search/rename/copy/
+  move/delete, traversal and root-deletion refusal, read-size limits, URL
+  validation, app and command allowlists, shell-character rejection, real
+  `hostname` execution, PowerShell quoting, window listing, intent coverage for
+  every tool phrase, confirmation/cancel flows, `/tools`, disabled tools and
+  six new config validation cases.
+- Hardware verification on the target machine: system info, top processes,
+  window listing, clipboard copy/read round-trip, screenshot saved to
+  `screenshots/screenshot-20261108-085253.png`, tray notification shown,
+  Notepad opened and closed through the tools.
+- End-to-end run: CPU query answered locally, a file write confirmed then
+  cancelled, confirmed again and written, read back, delete confirmed and the
+  file removed; exit code 0 with no model calls.
+
 ## v0.1.3 — 2026-11-08
 
 **Feature set 4.3 — Basic Intelligence** (Phase 3; implemented and verified),

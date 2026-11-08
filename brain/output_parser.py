@@ -21,6 +21,7 @@ class ChatResult:
   completion_tokens: int
   prompt_ms: float
   predicted_ms: float
+  finish_reason: str = ""
 
   @property
   def generated_tokens_per_second(self):
@@ -73,4 +74,5 @@ def parse_chat_completion(payload):
       completion_tokens=int(usage.get("completion_tokens") or 0),
       prompt_ms=float(timings.get("prompt_ms") or 0.0),
       predicted_ms=float(timings.get("predicted_ms") or 0.0),
+      finish_reason=str(first.get("finish_reason") or ""),
   )

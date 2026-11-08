@@ -61,7 +61,7 @@ class ConversationConfigTests(unittest.TestCase):
     self.assertTrue(conversation.enabled)
     self.assertEqual(conversation.mode, "short")
     self.assertEqual(conversation.max_turns, 8)
-    self.assertEqual(conversation.short_max_tokens, 50)
+    self.assertEqual(conversation.short_max_tokens, 90)
     self.assertTrue(conversation.resolved_history_db.is_absolute())
 
   def test_invalid_mode_is_rejected(self):
@@ -103,7 +103,7 @@ class ConversationTests(unittest.TestCase):
     conversation.mode = "technical"
     messages = conversation.messages("BASE")
     self.assertIn(MODE_INSTRUCTIONS["technical"], messages[0]["content"])
-    self.assertEqual(conversation.max_tokens(), 160)
+    self.assertEqual(conversation.max_tokens(), 320)
 
   def test_reset_clears_turns_and_summary(self):
     conversation = Conversation(ConversationConfig())
@@ -202,7 +202,7 @@ class AssistantTests(unittest.TestCase):
     self.assertIn("Detailed answers enabled", assistant.reply("/mode detailed"))
     self.assertEqual(assistant.mode, "detailed")
     assistant.reply("Explain floats")
-    self.assertEqual(client.calls[-1]["max_tokens"], 120)
+    self.assertEqual(client.calls[-1]["max_tokens"], 250)
 
   def test_mode_listing_and_unknown_mode(self):
     assistant, _ = self.make()

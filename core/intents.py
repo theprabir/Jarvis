@@ -1,10 +1,10 @@
 """Deterministic intent recognition, entity extraction and JSON validation.
 
-Requests that Python can answer (arithmetic, current time and date, built-in
-commands) are recognized here and answered without touching the model. The
-router returns ``None`` for everything else, so ambiguous or open-ended
+Requests that Python can answer (arithmetic, current time and date, computer
+actions, built-in commands) are recognized here and answered without guessing.
+The router returns ``None`` for everything else, so ambiguous or open-ended
 requests fall back to the LLM. ``Intent`` doubles as the validated structured
-output format used by later tool calling.
+output format used by tool calling.
 """
 
 from __future__ import annotations
@@ -18,7 +18,35 @@ from core.dates import find_date_reference
 
 CONFIDENCE_THRESHOLD = 0.7
 
-INTENT_NAMES = frozenset(
+TOOL_INTENTS = frozenset(
+    {
+        "system_info",
+        "processes",
+        "open_app",
+        "close_app",
+        "close_all_apps",
+        "open_url",
+        "open_path",
+        "read_file",
+        "write_file",
+        "create_folder",
+        "rename_path",
+        "copy_path",
+        "move_path",
+        "delete_path",
+        "list_files",
+        "search_files",
+        "run_command",
+        "screenshot",
+        "notify",
+        "windows_list",
+        "window_action",
+        "clipboard_copy",
+        "clipboard_read",
+    }
+)
+
+CONVERSATION_INTENTS = frozenset(
     {
         "time",
         "date",
@@ -30,23 +58,40 @@ INTENT_NAMES = frozenset(
         "history",
         "forget",
         "intent",
+        "confirm",
+        "cancel",
+        "tools",
     }
 )
-COMMANDS = frozenset({"help", "new", "mode", "history", "forget", "intent"})
+
+INTENT_NAMES = TOOL_INTENTS | CONVERSATION_INTENTS
+COMMANDS = frozenset(
+    {
+        "help",
+        "new",
+        "mode",
+        "history",
+        "forget",
+        "intent",
+        "confirm",
+        "cancel",
+        "tools",
+    }
+)
 
 _TIME_PATTERNS = (
-  r"\bwhat(?:'s| is)? the time\b",
-  r"\bwhat time is it\b",
-  r"\bcurrent time\b",
-  r"\btime (?:now|please)\b",
-  r"\bdo you know the time\b",
+    r"\bwhat(?:'s| is)? the time\b",
+    r"\bwhat time is it\b",
+    r"\bcurrent time\b",
+    r"\btime (?:now|please)\b",
+    r"\bdo you know the time\b",
 )
 
 _DATE_PATTERNS = (
-  r"\bwhat(?:'s| is)? the date\b",
-  r"\bwhat day is it\b",
-  r"\bwhat day is today\b",
-  r"\btoday'?s date\b",
+    r"\bwhat(?:'s| is)? the date\b",
+    r"\bwhat day is it\b",
+    r"\bwhat day is today\b",
+    r"\btoday'?s date\b",
 )
 
 _MATH_WORDS = (
@@ -64,6 +109,56 @@ _MATH_PREFIX = re.compile(
     r"|solve|tell me)\s+"
 )
 _MATH_FILLER = re.compile(r"\b(?:please|sir|for me|the result of)\b")
+
+_TLDS = {
+    "ai",
+    "app",
+    "co",
+    "com",
+    "de",
+    "dev",
+    "edu",
+    "fr",
+    "gov",
+    "in",
+    "info",
+    "io",
+    "me",
+    "net",
+    "org",
+    "tv",
+    "uk",
+    "xyz",
+}
+
+_FILE_EXTENSIONS = {
+    "csv",
+    "db",
+    "docx",
+    "exe",
+    "gif",
+    "html",
+    "ini",
+    "jpeg",
+    "jpg",
+    "js",
+    "json",
+    "log",
+    "md",
+    "mp3",
+    "mp4",
+    "pdf",
+    "png",
+    "py",
+    "toml",
+    "ts",
+    "txt",
+    "wav",
+    "xlsx",
+    "yaml",
+    "yml",
+    "zip",
+}
 
 
 class IntentError(ValueError):
@@ -177,11 +272,289 @@ def _math_expression(text):
   return lowered
 
 
+def _clean(value):
+  return str(value or "").strip().strip('"').strip("'").strip()
+
+
+def _looks_like_url(token):
+  text = _clean(token)
+  if not text:
+    return False
+  if re.match(r"^(?:https?://|www\.)", text, re.I):
+    return True
+  host = text.split("/")[0]
+  if "." not in host:
+    return False
+  return host.rsplit(".", 1)[-1].lower() in _TLDS
+
+
+def _looks_like_path(token):
+  text = _clean(token)
+  if not text:
+    return False
+  if "\\" in text or "/" in text or text.startswith("."):
+    return True
+  if "." in text:
+    return text.rsplit(".", 1)[-1].lower() in _FILE_EXTENSIONS
+  return False
+
+
+def recognize_computer(text, allowed_apps=(), allowed_commands=()):
+  """Recognize a computer-interaction request and extract its arguments."""
+  lowered = text.lower().strip().rstrip("?.!")
+  if not lowered:
+    return None
+  apps = {str(name).strip().lower() for name in allowed_apps}
+  commands = {str(name).strip().lower() for name in allowed_commands}
+
+  if "screenshot" in lowered or "screen shot" in lowered:
+    if re.search(r"\b(take|grab|capture|get|make)\b", lowered) or lowered in {
+        "screenshot",
+        "screen shot",
+    }:
+      return Intent("screenshot", 0.95)
+
+  if (
+      "clipboard" in lowered
+      and not re.match(r"^(?:copy|put)\b", lowered)
+      and re.search(r"\b(what|what's|read|show|see|check|peek|paste)\b", lowered)
+  ):
+    return Intent("clipboard_read", 0.9)
+
+  match = re.match(
+      r"^(?:copy|put) (?P<text>.+?) (?:to|into|on) (?:the |my )?clipboard$",
+      lowered,
+  )
+  if match:
+    return Intent(
+        "clipboard_copy", 0.9, {"text": _clean(match.group("text"))}
+    )
+
+  match = re.match(
+      r"^(?:notify me|show (?:a )?notification|send (?:a )?notification)"
+      r"(?: (?:that|about|saying))?[:\s]+(?P<message>.+)$",
+      lowered,
+  )
+  if match:
+    return Intent("notify", 0.9, {"message": match.group("message").strip()})
+
+  if re.fullmatch(
+      r"(?:list|show) (?:the )?(?:open )?windows", lowered
+  ) or "what windows are open" in lowered:
+    return Intent("windows_list", 0.9)
+
+  match = re.match(
+      r"^(?P<action>minimize|maximize|focus|switch to|bring up)"
+      r" (?:the )?(?P<title>.+?)(?: window)?$",
+      lowered,
+  )
+  if match:
+    action = match.group("action")
+    if action in {"switch to", "bring up"}:
+      action = "focus"
+    return Intent(
+        "window_action",
+        0.9,
+        {"title": _clean(match.group("title")), "action": action},
+    )
+
+  if (
+      "system status" in lowered
+      or "system information" in lowered
+      or "how is the system" in lowered
+  ):
+    return Intent("system_info", 0.9, {"kind": "all"})
+  if re.search(r"\bbattery\b", lowered):
+    return Intent("system_info", 0.9, {"kind": "battery"})
+  if re.search(r"\b(cpu|processor)\b", lowered) and re.search(
+      r"\b(usage|load|percent|using|used|busy|status|much)\b", lowered
+  ):
+    return Intent("system_info", 0.9, {"kind": "cpu"})
+  if re.search(r"\b(ram|memory)\b", lowered) and re.search(
+      r"\b(usage|used|free|available|much|percent|left)\b", lowered
+  ):
+    return Intent("system_info", 0.9, {"kind": "memory"})
+  if re.search(r"\b(disk|storage|drive)\b", lowered) and re.search(
+      r"\b(space|free|usage|full|much|percent|left)\b", lowered
+  ):
+    return Intent("system_info", 0.9, {"kind": "disk"})
+
+  if re.search(r"\b(processes|tasklist|task list)\b", lowered) and re.search(
+      r"\b(list|top|running|show|what|which)\b", lowered
+  ):
+    return Intent("processes", 0.9)
+
+  match = re.match(
+      r"^(?:read|show me|display|what'?s in) (?:the )?file (?P<path>.+)$",
+      lowered,
+  )
+  if match:
+    return Intent("read_file", 0.9, {"path": _clean(match.group("path"))})
+
+  match = re.match(
+      r"^(?:write|save) (?P<content>.+?) (?:to|into) (?:the )?file"
+      r" (?P<path>.+)$",
+      lowered,
+  )
+  if match:
+    return Intent(
+        "write_file",
+        0.9,
+        {
+            "path": _clean(match.group("path")),
+            "content": _clean(match.group("content")),
+        },
+    )
+
+  match = re.match(
+      r"^create (?:a )?(?:file|note) (?P<path>\S+?)"
+      r"(?: with (?:(?:content|text) )?(?P<content>.+))?$",
+      lowered,
+  )
+  if match:
+    return Intent(
+        "write_file",
+        0.9,
+        {
+            "path": _clean(match.group("path")),
+            "content": _clean(match.group("content") or ""),
+        },
+    )
+
+  match = re.match(
+      r"^create (?:a )?(?:folder|directory) (?P<path>.+)$", lowered
+  )
+  if match:
+    return Intent("create_folder", 0.9, {"path": _clean(match.group("path"))})
+
+  match = re.match(
+      r"^(?:delete|remove) (?:the )?(?:file|folder|directory)"
+      r" (?P<path>.+)$",
+      lowered,
+  )
+  if match:
+    return Intent("delete_path", 0.9, {"path": _clean(match.group("path"))})
+
+  match = re.match(
+      r"^(?:list|show) (?:the )?files(?: in (?P<path>.+))?$", lowered
+  )
+  if match:
+    return Intent(
+        "list_files", 0.9, {"path": _clean(match.group("path") or ".")}
+    )
+
+  match = re.match(
+      r"^(?:find|search(?: for)?) (?:files? )?(?:named |called )?"
+      r"(?P<name>\S+?)(?: in (?P<path>.+))?$",
+      lowered,
+  )
+  if match:
+    return Intent(
+        "search_files",
+        0.9,
+        {
+            "name": _clean(match.group("name")),
+            "path": _clean(match.group("path") or "."),
+        },
+    )
+
+  match = re.match(r"^rename (?P<source>\S+) to (?P<target>.+)$", lowered)
+  if match:
+    return Intent(
+        "rename_path",
+        0.9,
+        {
+            "source": _clean(match.group("source")),
+            "target": _clean(match.group("target")),
+        },
+    )
+
+  match = re.match(r"^copy (?P<source>\S+) to (?P<target>.+)$", lowered)
+  if match:
+    return Intent(
+        "copy_path",
+        0.9,
+        {
+            "source": _clean(match.group("source")),
+            "target": _clean(match.group("target")),
+        },
+    )
+
+  match = re.match(r"^move (?P<source>\S+) to (?P<target>.+)$", lowered)
+  if match:
+    return Intent(
+        "move_path",
+        0.9,
+        {
+            "source": _clean(match.group("source")),
+            "target": _clean(match.group("target")),
+        },
+    )
+
+  if re.fullmatch(
+      r"(?:close|quit|stop|shut down|shutdown) (?:all|every|everything)"
+      r"(?: (?:the )?(?:apps|applications|programs|windows))?",
+      lowered,
+  ):
+    return Intent("close_all_apps", 0.95)
+
+  match = re.match(
+      r"^(?:open|launch|start) (?:(?:the) )?(?:file )?(?P<target>.+)$",
+      lowered,
+  )
+  if match:
+    target = _clean(match.group("target"))
+    if _looks_like_path(target) and not _looks_like_url(target):
+      return Intent("open_path", 0.9, {"path": target})
+    if _looks_like_url(target):
+      return Intent("open_url", 0.9, {"url": target})
+    name = target[:-4] if target.endswith(".exe") else target
+    if name in apps:
+      return Intent("open_app", 0.9, {"application": name})
+    return None
+
+  match = re.match(
+      r"^(?:close|quit) (?:(?:the) )?(?P<target>.+?)"
+      r"(?: (?:window|app|application))?$",
+      lowered,
+  )
+  if match:
+    target = _clean(match.group("target"))
+    name = target[:-4] if target.endswith(".exe") else target
+    if name in apps:
+      return Intent("close_app", 0.9, {"application": name})
+    return None
+
+  match = re.match(
+      r"^(?:run|execute) (?:(?:the )?command )?"
+      r"(?P<command>[a-z0-9_.-]+)(?: (?P<arguments>.+))?$",
+      lowered,
+  )
+  if match and match.group("command") in commands:
+    return Intent(
+        "run_command",
+        0.9,
+        {
+            "command": match.group("command"),
+            "arguments": (match.group("arguments") or "").strip(),
+        },
+    )
+
+  return None
+
+
 class IntentRouter:
   """Choose a deterministic intent for a request, or None to use the LLM."""
 
-  def __init__(self, confidence_threshold=CONFIDENCE_THRESHOLD):
+  def __init__(
+      self,
+      confidence_threshold=CONFIDENCE_THRESHOLD,
+      allowed_apps=(),
+      allowed_commands=(),
+  ):
     self.threshold = confidence_threshold
+    self.allowed_apps = tuple(allowed_apps)
+    self.allowed_commands = tuple(allowed_commands)
 
   def route(self, text):
     text = (text or "").strip()
@@ -192,6 +565,12 @@ class IntentRouter:
       if name in COMMANDS:
         return Intent(name=name, confidence=1.0)
       return None
+
+    intent = recognize_computer(
+        text, self.allowed_apps, self.allowed_commands
+    )
+    if intent is not None:
+      return intent
     for recognizer in (recognize_time, recognize_date, recognize_math):
       intent = recognizer(text)
       if intent is not None:

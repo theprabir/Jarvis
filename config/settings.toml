@@ -73,10 +73,28 @@ summarize_after = 12
 # Character budget for the messages sent to the model (context is 2048 tokens).
 max_context_chars = 3500
 # Per-mode reply limits; this CPU generates roughly 5-10 tokens per second.
-short_max_tokens = 50
-detailed_max_tokens = 120
-technical_max_tokens = 160
+# They are sized so an answer finishes instead of being cut mid-sentence.
+short_max_tokens = 90
+detailed_max_tokens = 250
+technical_max_tokens = 320
+# When a reply still hits the limit, ask the model to continue once.
+max_continuations = 1
 # Load the most recent saved session at startup so context survives a restart.
 resume_last_session = true
 # SQLite file for persisted exchanges (git-ignored).
 history_db = "data/jarvis.db"
+
+[tools]
+# Computer interaction tools: files, applications, system info, clipboard,
+# windows, screenshots and notifications.
+enabled = true
+# File tools may only read or write inside this folder (relative to project).
+root = "."
+max_read_bytes = 200000
+search_limit = 20
+max_search_depth = 4
+command_timeout_s = 15.0
+# Applications JARVIS may open or close.
+allowed_apps = ["notepad", "calc", "mspaint", "explorer", "msedge", "chrome", "code"]
+# Terminal commands JARVIS may run; arguments are validated, never shelled.
+allowed_commands = ["ipconfig", "whoami", "systeminfo", "tasklist", "hostname", "ping"]

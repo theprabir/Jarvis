@@ -6,14 +6,15 @@ around a small local LLM (Llama 3.2 1B Instruct Q4_K_M) served by the existing
 deterministic Python modules do the audio, routing and tool work.
 
 **Current status:** Phase 1 (stabilization) and feature sets **4.1 Voice
-Interface**, **4.2 Conversation Intelligence**, **4.3 Basic Intelligence** and
-**4.4 Computer Interaction** complete. JARVIS listens through the microphone
-with push-to-talk, transcribes offline with Vosk, keeps multi-turn context
-across restarts, answers simple questions deterministically through Python,
-operates the computer through validated tools, falls back to the local model
-for everything else, and speaks through an interruptible Windows SAPI voice.
-Internet search and memory follow in feature sets 4.5+ (see
-`PLANS-STACK-FEATURES.md`, `CHANGELOG.md`).
+Interface**, **4.2 Conversation Intelligence**, **4.3 Basic Intelligence**,
+**4.4 Computer Interaction** and **4.5 Internet Search** complete. JARVIS
+listens through the microphone with push-to-talk, transcribes offline with
+Vosk, keeps multi-turn context across restarts, answers simple questions
+deterministically through Python, operates the computer through validated
+tools, searches the web and answers only from the fetched evidence with
+sources, falls back to the local model for everything else, and speaks
+through an interruptible Windows SAPI voice. Basic memory follows in feature
+set 4.6 (see `PLANS-STACK-FEATURES.md`, `CHANGELOG.md`).
 
 ## Requirements
 
@@ -57,6 +58,7 @@ All runtime settings live in `config/settings.toml`:
 | `[voice]` | Voice mode flag, microphone, push-to-talk key, VAD, silence/record limits, Vosk model path |
 | `[conversation]` | Multi-turn context, answer mode, token limits, summarization, history database |
 | `[tools]` | File sandbox root, read/search limits, allowed applications and commands |
+| `[web]` | Search provider, result and query limits, page extraction, evidence budget, cache |
 
 Unknown keys are rejected so typos fail fast. Override the file location with
 `--config PATH` or the `JARVIS_CONFIG` environment variable.
@@ -167,6 +169,37 @@ system, shell or JARVIS processes.
 Destructive file actions cannot escape `[tools] root`, and applications and
 commands must be listed in `config/settings.toml`.
 
+### Internet search
+
+Questions that need current information are routed to the search subsystem in
+`web/`. The model never sees the open internet: it receives a numbered evidence
+block and may only answer from it.
+
+| Step | Behaviour |
+| --- | --- |
+| Query variants | The question plus a keyword form (`max_queries`, default 2), capped and deduplicated |
+| Providers | `ddgs`/DuckDuckGo by default; Brave when `BRAVE_API_KEY` is set, selected by `[web] provider` |
+| Ranking | Duplicate URLs merged, results sharing no term with the question dropped, title matches ranked first |
+| Extraction | Top `extract_pages` pages are fetched and reduced to main text (`trafilatura` if installed, otherwise `lxml`) |
+| Budget | At most `context_chars` (1000, roughly 250 tokens) of evidence reaches the model |
+| Grounding | The answer must cite an existing source, and its figures or words must appear in the evidence; one retry is allowed, then JARVIS says the sources did not answer instead of guessing |
+| Sources | The reply ends with a numbered `Sources:` list |
+| Cache | Results cached in `data/search_cache.db` for `cache_ttl_s`; stale entries (up to 7 days) are used when the network fails |
+
+Ask with `search the web for …`, `look up …`, `google …`, `find information
+about …`, `latest news about …`, `wikipedia …`, or explicitly with `/web
+QUESTION`. A plain `search for notes in drafts` still searches files, not the
+web. Without a network connection the reply is a clear failure message, never
+a made-up answer. Page fetching prefers `primp` (browser TLS fingerprint)
+because many sites reject plain `httpx` with HTTP 403; `httpx` is the fallback.
+
+`BRAVE_API_KEY` is read from the environment, never from the config file.
+
+```bat
+set BRAVE_API_KEY=...
+.venv\Scripts\python main.py
+```
+
 The server is launched with:
 
 ```text
@@ -236,7 +269,8 @@ conversation context, context trimming, summarization, answer modes, commands,
 clarification, SQLite history/resume/deletion, intent routing, arithmetic and
 date parsing, JSON validation, tool argument validation, sandboxed file
 operations, app/command allowlists, confirmation flows, multi-step file plans,
-Escape interruption, VAD segmentation,
+web search ranking, caching and grounded answers, Escape interruption, VAD
+segmentation,
 resampling, device resolution, speech text cleanup and SAPI rate mapping. The
 Vosk transcription test is skipped when the model is absent and desktop tools
 are only validated, never exercised, by the suite.
@@ -262,6 +296,12 @@ tools/files.py          Sandboxed file and folder operations
 tools/apps.py           Allowlisted apps, URLs, paths and terminal commands
 tools/desktop.py        Screenshots, notifications and window control
 tools/clipboard.py      Clipboard read/write
+web/base.py             Search result type, URL and token helpers
+web/search.py           Query variants, ranking, evidence budget, orchestration
+web/duckduckgo.py       DuckDuckGo provider (ddgs client plus HTML fallback)
+web/brave.py            Brave Search API provider
+web/extract.py          Page fetching (primp/httpx) and main-content extraction
+web/cache.py            Bounded SQLite search cache with stale fallback
 screenshots/            Screen captures (git-ignored)
 core/benchmark.py       RAM and latency baseline
 brain/llm_client.py     Persistent HTTPX client
@@ -297,6 +337,11 @@ logs/                   Runtime logs (git-ignored)
   list, search, rename, copy, move, delete). A request that needs follow-up
   reasoning, such as "write the file location in it", is not planned: the
   sequence stops at that clause and the confirmation shows what will run.
+- Web search reads only the top three pages and at most 1000 characters of
+  evidence. Pages behind a login, a CAPTCHA or heavy JavaScript may contribute
+  a snippet only, and the answer is limited to what those pages said - the
+  model is instructed to answer `NOT_FOUND` rather than fill gaps from
+  memory. Results are ranked by term overlap, not by publication date.
 - Summarization costs one extra model call once the transcript grows past
   `summarize_after`, which adds a few seconds on this CPU.
 - Speech recognition is English-only and limited by the small Vosk model:

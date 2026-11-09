@@ -27,6 +27,7 @@ from core.history import HistoryError, HistoryStore
 from core.intents import TOOL_INTENTS, IntentRouter, plan_file_actions
 from tools import build_registry
 from tools.base import shorten
+from web.base import STOPWORDS, SearchError, words
 
 log = logging.getLogger(__name__)
 
@@ -48,6 +49,58 @@ CLARIFY_REPLY = (
     "I don't have earlier context for that, sir. What are you referring to?"
 )
 
+SEARCH_SYSTEM_PROMPT = (
+    "You are a research assistant. Answer the question in one or two"
+    " sentences using only the evidence below, and cite the source you used"
+    " in square brackets, for example [2]. Use no outside knowledge. If no"
+    " source mentions the subject at all, reply with exactly: NOT_FOUND"
+)
+
+SEARCH_RETRY_PROMPT = (
+    "Read the evidence and answer the question directly in one sentence."
+    " Give the specific fact or figure it contains and end with the source"
+    " number in square brackets, for example [2]. Use no outside knowledge."
+)
+
+NOT_FOUND_MARKER = "NOT_FOUND"
+
+
+def _has_citation(answer, count):
+  """True when the answer cites at least one source that exists."""
+  for chunk in (answer or "").split("["):
+    marker = chunk.split("]")[0].strip()
+    if marker.isdigit() and 1 <= int(marker) <= count:
+      return True
+  return False
+
+
+def _supported(answer, evidence):
+  """True when the answer's figures and terms come from the evidence."""
+  text = re.sub(r"\[\d+\]", " ", answer or "")
+  source = (evidence or "").replace(",", "")
+  numbers = re.findall(r"\d[\d,.]*", text)
+  if numbers:
+    for number in numbers:
+      digits = number.replace(",", "").rstrip(".")
+      whole = digits.split(".")[0]
+      if digits and digits in source:
+        return True
+      if len(whole) > 2 and whole in source:
+        return True
+    return False
+  terms = [
+      word for word in words(text)
+      if len(word) > 3 and word not in STOPWORDS
+  ]
+  available = set(words(source))
+  return sum(1 for term in terms if term in available) >= 2
+
+WEB_DISABLED = "Web search is disabled, sir."
+WEB_EMPTY = "I couldn't find anything reliable about that on the web, sir."
+WEB_UNGROUNDED = (
+    "I found sources but none of them actually answered that, sir."
+)
+
 CONTINUE_PROMPT = (
     "Continue exactly where your previous reply stopped. Do not repeat any"
     " text, do not restart the answer and do not add a greeting."
@@ -61,10 +114,11 @@ FAILURE_REPLIES = {
 
 HELP_TEXT = (
     "Commands: /new starts a fresh conversation, /mode short|detailed|technical"
-    " changes how much I say, /history shows recent exchanges, /intent TEXT"
-    " shows the detected intent as JSON, /tools lists computer tools, /confirm"
-    " and /cancel handle pending actions, /forget deletes saved history after"
-    " confirmation, /help lists this."
+    " changes how much I say, /web TEXT answers from web sources, /history"
+    " shows recent exchanges, /intent TEXT shows the detected intent as JSON,"
+    " /tools lists computer tools, /confirm and /cancel handle pending"
+    " actions, /forget deletes saved history after confirmation, /help lists"
+    " this."
 )
 
 def _normalize_sentence(text):
@@ -145,6 +199,7 @@ class Assistant:
     self._forget_pending = False
     self._pending_tool = None
     self._pending_plan = None
+    self._searcher = None
     self.registry = (
         build_registry(settings) if settings.tools.enabled else None
     )
@@ -196,6 +251,10 @@ class Assistant:
     # contain reference words but are fully understood without context.
     intent = self.router.route(text)
     if self.router.is_confident(intent):
+      if intent.name == "web_search":
+        return self._answer_web(
+            intent.entities.get("query", ""), user_text=text
+        )
       if intent.name in TOOL_INTENTS:
         answer = self._run_tool(text, intent)
         if answer is not None:
@@ -230,9 +289,105 @@ class Assistant:
     return answer
 
   def close(self):
+    if self._searcher is not None:
+      self._searcher.close()
+      self._searcher = None
     if self._store is not None:
       self._store.close()
       self._store = None
+
+  # -- web search -------------------------------------------------------
+
+  def _get_searcher(self):
+    """Build the searcher on first use so text-only sessions stay light."""
+    if self._searcher is None and self._settings.web.enabled:
+      try:
+        from web.search import Searcher
+
+        self._searcher = Searcher(self._settings.web)
+      except Exception as exc:  # a broken cache must not break chatting
+        log.error("Web search unavailable: %s", exc)
+        return None
+    return self._searcher
+
+  def _answer_web(self, query, user_text=None):
+    """Answer a question from fetched web evidence, with sources."""
+    query = " ".join((query or "").split())
+    if not query:
+      return "What should I search the web for, sir?"
+    searcher = self._get_searcher()
+    if searcher is None:
+      return WEB_DISABLED
+
+    try:
+      bundle = searcher.search(query)
+    except SearchError as exc:
+      log.warning("Web search failed for %r: %s", query, exc)
+      return f"I couldn't search the web, sir: {exc}."
+
+    if bundle.empty:
+      return WEB_EMPTY
+
+    answer, ok = self._complete(
+        self._search_messages(query, bundle.evidence, SEARCH_SYSTEM_PROMPT),
+        self.conversation.max_tokens(),
+    )
+    if not ok:
+      return answer
+
+    if not self._grounded(answer, bundle):
+      log.info("Retrying search answer for %r with a direct prompt", query)
+      answer, ok = self._complete(
+          self._search_messages(
+              query, bundle.evidence, SEARCH_RETRY_PROMPT
+          ),
+          self.conversation.max_tokens(),
+      )
+      if not ok:
+        return answer
+
+    if not self._grounded(answer, bundle):
+      log.info("Search evidence did not answer %r", query)
+      return WEB_UNGROUNDED
+
+    final = f"{answer.strip()}\n\n{self._sources(bundle.results)}"
+    self._remember(user_text or query, final)
+    log.info(
+        "Answered %r from %s source(s) via %s",
+        query,
+        len(bundle.results),
+        bundle.provider,
+    )
+    return final
+
+  def _search_messages(self, query, evidence, system):
+    """Messages that keep the model inside the fetched evidence."""
+    return [
+        {"role": "system", "content": system},
+        {
+            "role": "user",
+            "content": f"Question: {query}\n\nEvidence:\n{evidence}",
+        },
+    ]
+
+  def _grounded(self, answer, bundle):
+    """Whether an answer cites a real source and stays within the evidence."""
+    if not answer or NOT_FOUND_MARKER in answer.upper():
+      return False
+    sources = len(bundle.results[:3])
+    return _has_citation(answer, sources) and _supported(
+        answer, bundle.evidence
+    )
+
+  def _sources(self, results, limit=3):
+    """Numbered source list matching the citations in the answer."""
+    lines = []
+    for index, result in enumerate(results[:limit], 1):
+      title = result.title or result.url
+      lines.append(f"[{index}] {title} - {result.url}")
+    if not lines:
+      return "Sources: none"
+    return "Sources:\n" + "\n".join(lines)
 
   # -- computer tools ---------------------------------------------------
 
@@ -514,6 +669,11 @@ class Assistant:
         )
       self.conversation.mode = argument
       return f"{argument.capitalize()} answers enabled, sir."
+    if command in {"/web", "/search"}:
+      if not argument:
+        return "Usage: /web <question>"
+      original = text.split(maxsplit=1)[1] if len(parts) > 1 else argument
+      return self._answer_web(original, user_text=text)
     if command == "/history":
       return self._history()
     if command == "/intent":

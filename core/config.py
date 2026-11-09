@@ -141,6 +141,29 @@ class ToolsConfig:
 
 
 @dataclass(frozen=True)
+class WebConfig:
+  enabled: bool = True
+  # auto = Brave when a key is present, otherwise DuckDuckGo.
+  provider: str = "auto"
+  max_results: int = 6
+  max_queries: int = 2
+  timeout_s: float = 12.0
+  max_page_bytes: int = 400_000
+  extract_pages: int = 3
+  # Character budget for the evidence sent to the model (~4 chars per token).
+  context_chars: int = 1000
+  cache_ttl_s: int = 3600
+  cache_entries: int = 128
+  cache_db: str = "data/search_cache.db"
+  brave_api_key_env: str = "BRAVE_API_KEY"
+
+  @property
+  def resolved_cache_db(self) -> Path:
+    path = Path(self.cache_db)
+    return path if path.is_absolute() else (PROJECT_ROOT / path).resolve()
+
+
+@dataclass(frozen=True)
 class Settings:
   app: AppConfig
   llama: LlamaConfig
@@ -149,6 +172,7 @@ class Settings:
   voice: VoiceConfig
   conversation: ConversationConfig
   tools: ToolsConfig
+  web: WebConfig
 
 
 def _build(cls, data, section):
@@ -266,6 +290,33 @@ def _validate(settings):
         f"[tools] {group} must be a list of names",
     )
 
+  web = settings.web
+  _require(
+      web.provider in {"auto", "duckduckgo", "brave"},
+      "[web] provider must be auto, duckduckgo or brave",
+  )
+  _require(1 <= web.max_results <= 20, "[web] max_results must be 1-20")
+  _require(1 <= web.max_queries <= 4, "[web] max_queries must be 1-4")
+  _require(2.0 <= web.timeout_s <= 60.0, "[web] timeout_s must be 2-60")
+  _require(
+      50_000 <= web.max_page_bytes <= 2_000_000,
+      "[web] max_page_bytes must be 50000-2000000",
+  )
+  _require(0 <= web.extract_pages <= 5, "[web] extract_pages must be 0-5")
+  _require(
+      400 <= web.context_chars <= 4000,
+      "[web] context_chars must be 400-4000",
+  )
+  _require(
+      0 <= web.cache_ttl_s <= 86_400, "[web] cache_ttl_s must be 0-86400"
+  )
+  _require(1 <= web.cache_entries <= 1000, "[web] cache_entries must be 1-1000")
+  _require(bool(web.cache_db), "[web] cache_db must not be empty")
+  _require(
+      bool(web.brave_api_key_env),
+      "[web] brave_api_key_env must not be empty",
+  )
+
 
 def load_settings(path=None):
   """Load and validate settings from TOML.
@@ -297,6 +348,7 @@ def load_settings(path=None):
           ConversationConfig, raw.get("conversation", {}), "conversation"
       ),
       tools=_build(ToolsConfig, raw.get("tools", {}), "tools"),
+      web=_build(WebConfig, raw.get("web", {}), "web"),
   )
   _validate(settings)
   return settings

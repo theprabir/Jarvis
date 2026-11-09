@@ -69,6 +69,7 @@ CONVERSATION_INTENTS = frozenset(
         "help",
         "new",
         "mode",
+        "web_search",
         "history",
         "forget",
         "intent",
@@ -358,6 +359,49 @@ def _looks_like_path(token):
   if "." in text:
     return text.rsplit(".", 1)[-1].lower() in _FILE_EXTENSIONS
   return False
+
+
+_WEB_PATTERNS = (
+    (
+        r"^(?:search|look)\s+(?:the\s+)?(?:web|internet|online)\s+for\s+"
+        r"(?P<query>.+)$",
+        "",
+    ),
+    (
+        r"^(?:search|look)\s+for\s+(?P<query>.+?)\s+(?:online"
+        r"|on\s+the\s+(?:web|internet))$",
+        "",
+    ),
+    (r"^(?:google|look up)\s+(?P<query>.+)$", ""),
+    (
+        r"^(?:find|get)\s+(?:me\s+)?(?:information|info|details)\s+"
+        r"(?:about|on)\s+(?P<query>.+)$",
+        "",
+    ),
+    (
+        r"^(?:what(?:'s| is)\s+)?(?:the\s+)?latest\s+news\s+"
+        r"(?:about|on)\s+(?P<query>.+)$",
+        " news",
+    ),
+    (r"^(?:news|headlines)\s+(?:about|on)\s+(?P<query>.+)$", " news"),
+    (r"^wikipedia\s+(?P<query>.+)$", " site:en.wikipedia.org"),
+)
+
+
+def recognize_web(text):
+  """Recognize an explicit request to look something up on the web."""
+  lowered = (text or "").lower().strip().rstrip("?.!")
+  if not lowered:
+    return None
+  for pattern, suffix in _WEB_PATTERNS:
+    match = re.match(pattern, lowered)
+    if not match:
+      continue
+    query = _clean(match.group("query"))
+    if len(query) < 2:
+      return None
+    return Intent("web_search", 0.88, {"query": query + suffix})
+  return None
 
 
 def recognize_computer(text, allowed_apps=(), allowed_commands=()):
@@ -747,7 +791,13 @@ class IntentRouter:
     if not text:
       return None
     if text.startswith("/"):
-      name = text.split()[0].lstrip("/").lower()
+      parts = text.split(maxsplit=1)
+      name = parts[0].lstrip("/").lower()
+      if name in {"web", "search"} and len(parts) == 2:
+        query = parts[1].strip()
+        if query:
+          return Intent("web_search", 1.0, {"query": query})
+        return None
       if name in COMMANDS:
         return Intent(name=name, confidence=1.0)
       return None
@@ -755,6 +805,9 @@ class IntentRouter:
     intent = recognize_computer(
         text, self.allowed_apps, self.allowed_commands
     )
+    if intent is not None:
+      return intent
+    intent = recognize_web(text)
     if intent is not None:
       return intent
     for recognizer in (recognize_time, recognize_date, recognize_math):

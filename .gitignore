@@ -21,6 +21,8 @@ cache/
 data/jarvis.db
 data/jarvis.db-*
 data/memory.json
+data/search_cache.db
+data/search_cache.db-*
 
 # Generated screenshots
 screenshots/

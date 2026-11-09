@@ -4,6 +4,95 @@ All notable changes to JARVIS are recorded here. Versions follow the project
 convention: each completed feature set increments the patch number; completing
 all feature sets in a phase increments the middle number and resets the patch.
 
+## v0.1.8 — 2026-11-09
+
+**Internet search (feature set 4.5)**
+
+### Implemented functionality
+
+- **Search intents** — `web_search` is recognized from `search the web for …`,
+  `look up …`, `google …`, `find information about …`, `latest news about …`
+  and `wikipedia X` (routed as `X site:en.wikipedia.org`), plus `/web QUERY`.
+  File searches (`search for notes in drafts`) still go to the file tools.
+- **Provider abstraction** — `web/base.py` defines the result type and URL
+  helpers; `web/duckduckgo.py` uses the `ddgs` client with the DuckDuckGo HTML
+  endpoint as a fallback; `web/brave.py` uses the Brave API when
+  `BRAVE_API_KEY` is set. `[web] provider = "auto"` picks Brave only when that
+  key exists; provider errors are mapped to readable `SearchError`s.
+- **Query generation and ranking** — two variants (the question and a
+  stopword-free keyword form), URL normalization and dedupe, relevance scoring
+  (title matches first), and removal of results that share no term with the
+  question.
+- **Page fetching and extraction** — the top three pages are fetched with
+  `primp` (browser TLS fingerprint; plain `httpx` is refused with HTTP 403 by
+  many sites) and reduced to main text with `trafilatura`, falling back to a
+  compact `lxml` paragraph extractor. Snippets stay distinguishable from
+  fetched text.
+- **Evidence budget** — at most 1000 characters (~250 tokens) from at most
+  three sources reach the model, numbered `[1]`…`[3]`.
+- **Grounded answers** — the prompt requires an answer from that evidence with
+  a citation; `_has_citation` and `_supported` then verify the citation exists
+  and that the answer's figures or terms actually occur in the evidence. One
+  retry is allowed before JARVIS says `I found sources but none of them
+  actually answered that, sir.` A failed search is reported, never answered
+  from model memory.
+- **Sources** — every successful reply ends with a numbered `Sources:` list
+  matching the citations.
+- **Caching and offline fallback** — results are cached in
+  `data/search_cache.db` for `cache_ttl_s` (1 h) with a bounded entry count and
+  versioned keys; entries up to seven days old are used when the network fails.
+- **Configuration** — `[web]` in `config/settings.toml` (enabled, provider,
+  `max_results`, `max_queries`, `timeout_s`, `max_page_bytes`, `extract_pages`,
+  `context_chars`, `cache_ttl_s`, `cache_entries`, `cache_db`,
+  `brave_api_key_env`) with validation for every value.
+
+### Files created or modified
+
+New package `web/` (`base.py`, `search.py`, `duckduckgo.py`, `brave.py`,
+`extract.py`, `cache.py`, `__init__.py`) and `tests/test_web.py`.
+Modified `core/config.py`, `core/intents.py`, `core/assistant.py`,
+`config/settings.toml`, `requirements.txt` (`ddgs>=9.0.0`), `.gitignore`
+(search cache), `README.md`, `CHANGELOG.md`.
+
+### Bug fixes found while verifying
+
+- The first grounding prompt ordered the model to reply `NOT_FOUND` and the 1B
+  model over-refused: with Worldometer's 122,225,684 in the evidence it still
+  answered `NOT_FOUND` (50.7 s). A research-style prompt answered correctly
+  (`122.4 million … [2]`, 32.4 s), so grounding is now a positive prompt plus
+  deterministic citation/support checks and one retry.
+- The support check treated the citation number itself as a figure; citation
+  markers are stripped before comparing numbers.
+- `_evidence` could include a fourth source while `Sources:` listed three;
+  blocks are now capped to the same three results.
+- Cache keys are versioned (`v2`) so entries written before extraction worked
+  cannot return text-less results.
+
+### Testing
+
+- 212 unit tests pass, including ranking, dedupe, evidence budget, cache TTL
+  and stale fallback, provider errors, query variants, intent routing, config
+  validation, and grounded/uncited/fabricated-answer handling. `compileall`
+  clean.
+- Live search: `capital of Japan` returned 3 results; `python asyncio
+  tutorial` returned 6 results in 9.3 s with two pages extracted (6000
+  characters each).
+- End-to-end with `llama-server`: "search the web for the population of Japan"
+  answered `approximately 122,225,684 … [1]` with three sources in 28.8 s,
+  Python RSS +6.9 MB for the search; a cached repeat took 3.0 s.
+
+### Known limitations
+
+- Only the top three pages are read and only 1000 characters of evidence are
+  sent, so a fact buried deeper in a page is not found.
+- Pages behind a login, a CAPTCHA or heavy JavaScript may contribute a snippet
+  only; some sites still refuse automated fetching.
+- Results are ranked by term overlap, not by publication date.
+- The DuckDuckGo HTML fallback is inherently fragile; Brave is the stable
+  option but needs a key.
+- The Wikipedia REST API refused automated requests (HTTP 403), so Wikipedia
+  lookups use the `site:` filter through the search provider instead.
+
 ## v0.1.7 — 2026-11-09
 
 **Multi-step file plans, and a measured speech-model comparison**

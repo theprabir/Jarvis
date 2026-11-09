@@ -107,3 +107,25 @@ command_timeout_s = 15.0
 allowed_apps = ["notepad", "calc", "mspaint", "explorer", "msedge", "chrome", "code"]
 # Terminal commands JARVIS may run; arguments are validated, never shelled.
 allowed_commands = ["ipconfig", "whoami", "systeminfo", "tasklist", "hostname", "ping"]
+
+[web]
+# Internet search and grounded answers. No API key is needed for DuckDuckGo.
+enabled = true
+# auto = Brave when BRAVE_API_KEY is set, otherwise DuckDuckGo.
+provider = "auto"
+# Results considered per query, and query variants sent to the provider.
+max_results = 6
+max_queries = 2
+# Network timeout for a search or a page fetch.
+timeout_s = 12.0
+# Hard cap on downloaded bytes per page, and pages to read in full.
+max_page_bytes = 400000
+extract_pages = 3
+# Character budget for the evidence given to the model (~250 tokens).
+context_chars = 1000
+# Search results are cached for an hour; stale entries still help offline.
+cache_ttl_s = 3600
+cache_entries = 128
+cache_db = "data/search_cache.db"
+# Read from the environment; never put the key itself in this file.
+brave_api_key_env = "BRAVE_API_KEY"

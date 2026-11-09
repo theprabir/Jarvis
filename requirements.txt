@@ -13,6 +13,8 @@ webrtcvad-wheels>=2.0.14
 vosk>=0.3.41
 keyboard>=0.13.5
 
-# Legacy: still used by core/tools.py until the Phase 4 search rebuild.
+# Web search: the maintained DuckDuckGo client (providers abstract it away).
+ddgs>=9.0.0
+# Legacy: still imported by core/tools.py, which main.py no longer uses.
 requests>=2.32.0
 duckduckgo-search>=6.0.0

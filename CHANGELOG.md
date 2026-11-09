@@ -4,6 +4,119 @@ All notable changes to JARVIS are recorded here. Versions follow the project
 convention: each completed feature set increments the patch number; completing
 all feature sets in a phase increments the middle number and resets the patch.
 
+## v0.1.7 — 2026-11-09
+
+**Multi-step file plans, and a measured speech-model comparison**
+
+### Implemented functionality
+
+- **One confirmation for a sequence** — `plan_file_actions` splits a request
+  into explicit file actions (create, write, read, list, search, rename, copy,
+  move, delete). Two or more parseable actions become a plan: JARVIS shows a
+  short summary (`Create the folder "drafts" and write 5 characters to
+  "drafts/notes.txt". Please confirm to continue.`), executes the steps in
+  order after one confirmation, and stops at the first failure with
+  `Step N failed: …` instead of continuing blindly.
+- **Folder context** — after a folder is created, later relative paths in the
+  same sentence stay inside it; `in that folder` / `in it` is also accepted.
+- **File lists** — `create two files - readme.md & main.py` (also `three`,
+  `four`, `five` or a digit) expands into one empty-file action per name.
+- **Safe stop on ambiguity** — a clause that does not parse as a file action
+  ends the plan there, so nothing is guessed and the confirmation only lists
+  what will actually run. `/cancel` and any unrelated request drop the plan.
+- **Speech model comparison** — `vosk-model-en-us-0.22-lgraph` was downloaded,
+  installed in `models/` and measured against the bundled small model with
+  SAPI-synthesized speech (10 sentences, David and Zira voices, 20 clips):
+  small 3.4 % word error, 181 MB, ~2.1 s per 3 s clip; lgraph 4.4 % error,
+  396 MB, ~10.5 s per clip. The large model is kept on disk but **is not**
+  the default: it would push the assistant to 1305 MB, over the 1.3 GB target.
+
+### Files modified
+
+`core/intents.py` (`FILE_INTENTS`, clause splitting, file-list expansion,
+`plan_file_actions`), `core/assistant.py` (pending plan, `_propose_plan`,
+`_run_plan`, `/cancel`), `tools/base.py` (`shorten` exported),
+`config/settings.toml` (model note), `tests/test_tools.py` (5 plan tests),
+`README.md`, `CHANGELOG.md`. New model directory
+`models/vosk-model-en-us-0.22-lgraph/` (204 MB, optional).
+
+### Testing
+
+- 179 unit tests pass (5 new: plan ordering and folder context, file-list
+  expansion, stop at an unclear clause, one-action requests stay single).
+- Plan flow verified through `Assistant`: one short prompt (under 130 chars),
+  both steps run after `yes`, `Step 1 failed` on a missing file, `/no` cancels
+  without touching disk.
+- STT benchmark: 20 synthesized clips per model, transcribed with
+  `voice/stt.py`; word error computed by edit distance. Model load 1.9 s
+  (small) vs 3.7 s (lgraph). Working-set baseline re-measured:
+  `llama-server` 909 MB + Python 37 MB = 946 MB total.
+
+## v0.1.6 — 2026-11-09
+
+**Fixes — usable confirmations, correct paths and a working Escape key**
+(on top of feature set 4.4; implemented and verified).
+
+### Implemented functionality
+
+- **Short spoken confirmations** — every destructive tool now has a concise
+  preview ("Create the folder \"reports\"", "Write 19 characters to
+  \"notes.md\"", "Close 2 chrome windows") and `Tool.describe` caps a
+  confirmation at 180 characters. A pending action asks
+  "Please confirm to continue." instead of reading the whole request aloud.
+- **Paths stop at the next instruction** — folder, file, rename, copy, move
+  and delete paths end at the first clause. "create a folder named prabir's
+  docs on the desktop & in that folder, create two files…" now proposes one
+  folder instead of using the entire sentence as a folder name (the
+  `WinError 123` failure in `logs/jarvis.log`).
+- **Desktop/Documents/Downloads targets** — a location in the request becomes
+  `~/Desktop/...`, which is refused with the reason and the exact setting to
+  change (`[tools] root`), rather than creating a folder with a nonsense name.
+- **Folder inside a folder** — "create a folder named reports in drafts"
+  creates `drafts/reports`.
+- **Escape works without the keyboard hook** — `voice/interface.py` polls
+  `GetAsyncKeyState(VK_ESCAPE)` every 30 ms while listening or speaking, so
+  Escape interrupts speech in elevated or hook-restricted consoles too. The
+  interrupt is logged, and the hook is still installed when available.
+- **Longer voice capture** — `silence_ms` 900 → 1200 and `max_record_s`
+  15 → 20, so requests are not cut at the first natural pause.
+- **STT model fallback** — a missing configured Vosk path now uses the largest
+  `models/vosk-model-*` folder, so installing a more accurate model needs no
+  configuration; the loaded model and microphone sample rate are logged.
+
+### Files modified
+
+`core/intents.py` (clause-aware path extraction, location and parent folders),
+`core/assistant.py` (confirmation wording), `tools/base.py` (preview cap),
+`tools/__init__.py` (per-tool previews), `tools/files.py` (sandbox message),
+`voice/interface.py` (Escape polling, listening/speaking flags),
+`voice/stt.py` (model fallback), `voice/audio.py` (sample-rate log),
+`config/settings.toml`, `tests/test_tools.py`, `tests/test_voice.py`,
+`README.md`, `CHANGELOG.md`.
+
+### Bug fixes
+
+- **A spoken file request became a 300-character folder name** — the same
+  intent swallowed the rest of the sentence and the create failed with
+  `WinError 123`. The path is now the first clause only.
+- **Confirmations took over a minute to speak** — the prompt echoed the whole
+  request; it is now one short sentence (72 characters for the reported case,
+  about 3 seconds of speech).
+- **Escape did not stop speech** — the hotkey callback was not fired in that
+  session; a key-state poll now sets the same interrupt that purges SAPI.
+
+### Testing
+
+- 172 unit tests pass (5 new: clause-aware folder parsing, parent folder,
+  short confirmation, Escape interrupt on/off).
+- Live smoke test against a temporary root created folders, wrote/read/lists/
+  searched, renamed, copied, moved and deleted files, reported CPU/memory/
+  disk/battery/processes, captured a screenshot, showed a notification, listed
+  windows, ran `hostname`, rejected a disallowed command, opened and closed
+  Notepad, and refused an outside path with the new hint.
+- Vocal confirmation of the reported request measured 72 characters (~3 s at
+  175 wpm). Escape still needs a real key press on the machine to confirm.
+
 ## v0.1.5 — 2026-11-08
 
 **Fixes — complete replies and precise app closing** (on top of feature set

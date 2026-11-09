@@ -34,7 +34,10 @@ def _resolve(config, raw):
   candidate = path if path.is_absolute() else root / path
   resolved = candidate.resolve()
   if resolved != root and root not in resolved.parents:
-    raise ToolError(f"{text} is outside the allowed folder ({root})")
+    raise ToolError(
+        f"{text} is outside the allowed folder ({root}). Change"
+        " [tools] root in config/settings.toml to work elsewhere"
+    )
   return resolved
 
 

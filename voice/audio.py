@@ -194,6 +194,7 @@ class Microphone:
     try:
       stream, rate, _ = self._open()
       self.rate = rate
+      log.info("Microphone opened at %s Hz", rate)
       stream.stop()
       stream.close()
     except sd.PortAudioError as exc:

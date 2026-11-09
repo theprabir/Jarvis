@@ -16,7 +16,7 @@ from types import SimpleNamespace
 
 from core.assistant import Assistant
 from core.config import ConfigError, ToolsConfig, load_settings
-from core.intents import Intent, IntentRouter
+from core.intents import Intent, IntentRouter, plan_file_actions
 from tools import build_registry
 from tools.apps import select_close_targets, validate_url
 from tools.base import Tool, ToolError, ToolRegistry, ToolResult
@@ -395,6 +395,73 @@ class IntentToolTests(unittest.TestCase):
     self.assertEqual(self.route("copy a.txt to b.txt").name, "copy_path")
     self.assertEqual(self.route("move a.txt to b.txt").name, "move_path")
 
+  def test_compound_request_uses_the_first_action(self):
+    intent = self.route(
+        "create a folder named prabir's docs on the desktop & in that"
+        " folder create two files"
+    )
+    self.assertEqual(intent.name, "create_folder")
+    self.assertEqual(intent.entities["path"], "~/Desktop/prabir's docs")
+
+  def test_folder_inside_a_parent_folder(self):
+    intent = self.route("create a folder named reports in drafts")
+    self.assertEqual(intent.name, "create_folder")
+    self.assertEqual(intent.entities["path"], "drafts/reports")
+
+  def test_plan_runs_several_file_actions(self):
+    plan = plan_file_actions(
+        "create a folder named drafts and in that folder write hello to"
+        " file notes.txt and copy notes.txt to backup.txt"
+    )
+    self.assertEqual(
+        [name for name, _arguments, _clause in plan],
+        ["create_folder", "write_file", "copy_path"],
+    )
+    self.assertEqual(plan[0][1], {"path": "drafts"})
+    self.assertEqual(
+        plan[1][1], {"path": "drafts/notes.txt", "content": "hello"}
+    )
+    self.assertEqual(
+        plan[2][1],
+        {"source": "drafts/notes.txt", "target": "drafts/backup.txt"},
+    )
+
+  def test_plan_keeps_a_folder_prefix_with_its_action(self):
+    plan = plan_file_actions(
+        "create a folder named docs & in that folder, create two files"
+        ' - "readme.md" & "main.py"'
+    )
+    self.assertEqual(
+        [name for name, _arguments, _clause in plan],
+        ["create_folder", "write_file", "write_file"],
+    )
+    self.assertEqual(plan[1][1]["path"], "docs/readme.md")
+    self.assertEqual(plan[2][1]["path"], "docs/main.py")
+
+  def test_second_folder_is_a_sibling_by_default(self):
+    plan = plan_file_actions(
+        "create a folder named a and create a folder named b"
+    )
+    self.assertEqual([step[1]["path"] for step in plan], ["a", "b"])
+
+  def test_plan_expands_a_file_list(self):
+    plan = plan_file_actions('create two files - "readme.md" & "main.py"')
+    self.assertEqual(
+        [step[1]["path"] for step in plan], ["readme.md", "main.py"]
+    )
+
+  def test_plan_stops_at_the_first_unclear_step(self):
+    plan = plan_file_actions(
+        "create a folder named drafts and write hello to file notes.txt"
+        " and make me a sandwich"
+    )
+    self.assertEqual(len(plan), 2)
+    # Later relative paths stay inside the folder just created.
+    self.assertEqual(plan[1][1]["path"], "drafts/notes.txt")
+
+  def test_single_action_is_not_a_plan(self):
+    self.assertIsNone(plan_file_actions("create a folder named drafts"))
+
   def test_command_and_windows(self):
     run = self.route("run ipconfig")
     self.assertEqual(run.name, "run_command")
@@ -453,7 +520,7 @@ class AssistantToolTests(unittest.TestCase):
   def test_destructive_action_requires_confirmation(self):
     assistant, client = self.make()
     prompt = assistant.reply("write hello to file notes.txt")
-    self.assertIn("Say confirm", prompt)
+    self.assertIn("confirm to continue", prompt)
     self.assertFalse((self.root / "notes.txt").exists())
 
     done = assistant.reply("yes")
@@ -462,6 +529,51 @@ class AssistantToolTests(unittest.TestCase):
                      "hello")
     self.assertEqual(client.calls, [])
     self.assertIn("Saved 5 characters", assistant.reply("/history"))
+
+  def test_confirmation_is_short_and_names_the_folder(self):
+    assistant, _ = self.make()
+    prompt = assistant.reply(
+        "create a folder named prabir's docs on the desktop & in that folder"
+        " create two files"
+    )
+    self.assertIn('Create the folder "~/Desktop/prabir\'s docs"', prompt)
+    self.assertIn("confirm to continue", prompt)
+    self.assertLess(len(prompt), 110)
+
+  def test_plan_asks_once_then_runs_every_step(self):
+    assistant, client = self.make()
+    prompt = assistant.reply(
+        "create a folder named drafts and in that folder write hello to"
+        " file notes.txt"
+    )
+    self.assertIn("confirm to continue", prompt)
+    self.assertLess(len(prompt), 130)
+    self.assertFalse((self.root / "drafts").exists())
+
+    result = assistant.reply("yes")
+    self.assertIn("Created the folder drafts", result)
+    self.assertIn("Saved 5 characters", result)
+    self.assertEqual(
+        (self.root / "drafts" / "notes.txt").read_text(encoding="utf-8"),
+        "hello",
+    )
+    self.assertEqual(client.calls, [])
+
+  def test_plan_stops_at_the_first_failure(self):
+    assistant, _ = self.make()
+    prompt = assistant.reply(
+        "delete file missing.txt and create a folder named drafts"
+    )
+    self.assertIn("confirm to continue", prompt)
+    result = assistant.reply("yes")
+    self.assertIn("Step 1 failed", result)
+    self.assertFalse((self.root / "drafts").exists())
+
+  def test_plan_can_be_cancelled(self):
+    assistant, _ = self.make()
+    assistant.reply("create a folder named a and create a folder named b")
+    self.assertEqual(assistant.reply("no"), "Cancelled, sir.")
+    self.assertFalse((self.root / "a").exists())
 
   def test_cancel_leaves_files_untouched(self):
     assistant, _ = self.make()
@@ -475,9 +587,9 @@ class AssistantToolTests(unittest.TestCase):
   def test_confirmed_command_runs(self):
     assistant, _ = self.make()
     prompt = assistant.reply("run hostname")
-    self.assertIn("Say confirm", prompt)
+    self.assertIn("confirm to continue", prompt)
     result = assistant.reply("/confirm")
-    self.assertNotIn("Say confirm", result)
+    self.assertNotIn("confirm to continue", result)
     self.assertTrue(result)
 
   def test_read_file_uses_the_reader_tool(self):
@@ -502,7 +614,7 @@ class AssistantToolTests(unittest.TestCase):
   def test_close_all_requires_confirmation(self):
     assistant, client = self.make()
     prompt = assistant.reply("close all apps")
-    self.assertIn("Say confirm", prompt)
+    self.assertIn("confirm to continue", prompt)
     self.assertEqual(assistant.reply("/cancel"), "Cancelled, sir.")
     self.assertEqual(client.calls, [])
 

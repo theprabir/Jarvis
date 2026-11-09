@@ -24,8 +24,9 @@ from core.conversation import (
     needs_clarification,
 )
 from core.history import HistoryError, HistoryStore
-from core.intents import TOOL_INTENTS, IntentRouter
+from core.intents import TOOL_INTENTS, IntentRouter, plan_file_actions
 from tools import build_registry
+from tools.base import shorten
 
 log = logging.getLogger(__name__)
 
@@ -143,6 +144,7 @@ class Assistant:
     self._session_id = uuid.uuid4().hex
     self._forget_pending = False
     self._pending_tool = None
+    self._pending_plan = None
     self.registry = (
         build_registry(settings) if settings.tools.enabled else None
     )
@@ -174,13 +176,21 @@ class Assistant:
       return "I didn't catch that, sir."
     if text.startswith("/"):
       return self._command(text)
-    if self._pending_tool is not None:
+    if self._pending_tool is not None or self._pending_plan is not None:
       answer = self._confirmation_reply(text)
       if answer is not None:
         return answer
       # Any other request abandons the pending action instead of surprising
       # the user later.
       self._pending_tool = None
+      self._pending_plan = None
+
+    if self.registry is not None:
+      plan = plan_file_actions(
+          text, self.router.allowed_apps, self.router.allowed_commands
+      )
+      if plan is not None:
+        return self._propose_plan(plan, text)
 
     # Deterministic intents come first: short questions like "what time is it?"
     # contain reference words but are fully understood without context.
@@ -238,7 +248,8 @@ class Assistant:
 
     if tool.permission == "confirm":
       self._pending_tool = (intent.name, arguments, text)
-      return f"{tool.describe(arguments)}. Say confirm to proceed, or cancel."
+      # One short sentence: a long read-out is slow and useless when spoken.
+      return f"{tool.describe(arguments)}. Please confirm to continue."
 
     result = registry.execute(intent.name, arguments)
     if result.ok:
@@ -254,10 +265,13 @@ class Assistant:
       return self._confirm_pending()
     if lowered in NO_WORDS:
       self._pending_tool = None
+      self._pending_plan = None
       return "Cancelled, sir."
     return None
 
   def _confirm_pending(self):
+    if self._pending_plan is not None:
+      return self._run_plan()
     pending, self._pending_tool = self._pending_tool, None
     if pending is None:
       return "There is nothing waiting for confirmation, sir."
@@ -271,6 +285,52 @@ class Assistant:
     else:
       log.info("Confirmed tool %s failed: %s", name, result.error)
     return result.text
+
+  # -- multi-step file plans --------------------------------------------
+
+  def _propose_plan(self, plan, text):
+    """Ask once for an ordered list of file actions."""
+    self._pending_plan = (plan, text)
+    self._pending_tool = None
+    labels = [
+        self.registry.get(name).describe(arguments)
+        for name, arguments, _clause in plan
+    ]
+    if len(labels) > 1:
+      labels = [labels[0]] + [
+          label[0].lower() + label[1:] for label in labels[1:]
+      ]
+    if len(labels) > 2:
+      summary = f"{labels[0]}, {labels[1]} and {len(labels) - 2} more"
+    else:
+      summary = " and ".join(labels)
+    log.info("Proposed a %s-step file plan", len(plan))
+    return f"{shorten(summary)}. Please confirm to continue."
+
+  def _run_plan(self):
+    """Run the confirmed plan in order, stopping at the first failure."""
+    pending, self._pending_plan = self._pending_plan, None
+    if pending is None:
+      return "There is nothing waiting for confirmation, sir."
+    plan, user_text = pending
+    results = []
+    for index, (name, arguments, _clause) in enumerate(plan, 1):
+      result = self.registry.execute(name, arguments)
+      if not result.ok:
+        log.info(
+            "Plan step %s/%s (%s) failed: %s",
+            index,
+            len(plan),
+            name,
+            result.error,
+        )
+        results.append(f"Step {index} failed: {result.text}")
+        break
+      log.info("Plan step %s/%s (%s) completed", index, len(plan), name)
+      results.append(result.text)
+    answer = " ".join(results)
+    self._remember(user_text, answer)
+    return answer
 
   # -- deterministic intents -------------------------------------------
 
@@ -437,6 +497,7 @@ class Assistant:
       self._session_id = uuid.uuid4().hex
       self._forget_pending = False
       self._pending_tool = None
+      self._pending_plan = None
       return "Starting a new conversation, sir."
     if command == "/mode":
       if not argument:
@@ -465,9 +526,10 @@ class Assistant:
     if command == "/confirm":
       return self._confirm_pending()
     if command == "/cancel":
-      if self._pending_tool is None:
+      if self._pending_tool is None and self._pending_plan is None:
         return "There is nothing to cancel, sir."
       self._pending_tool = None
+      self._pending_plan = None
       return "Cancelled, sir."
     if command == "/forget":
       return self._forget(argument)

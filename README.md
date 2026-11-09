@@ -62,10 +62,26 @@ Unknown keys are rejected so typos fail fast. Override the file location with
 `--config PATH` or the `JARVIS_CONFIG` environment variable.
 
 Voice defaults: `ctrl+space` push-to-talk, VAD aggressiveness 2, a request ends
-after 900 ms of silence, clicks shorter than 250 ms are discarded, recording is
-capped at 15 s. `input_device = ""` means the system default microphone; set it
-to a name substring (for example `"USB"`) to pick another device. `ptt_key`
-takes any `keyboard` hotkey string.
+after 1200 ms of silence, clicks shorter than 250 ms are discarded, recording
+is capped at 20 s. A shorter `silence_ms` cuts a request at its first pause and
+produces fragmented transcripts. `input_device = ""` means the system default
+microphone; set it to a name substring (for example `"USB"`) to pick another
+device. `ptt_key` takes any `keyboard` hotkey string.
+
+Transcription accuracy is set by the Vosk model. Both models were measured
+here with SAPI-synthesized sentences (two voices, 20 clips):
+
+| Model | Disk | Python process | Decode per ~3 s clip | Word error |
+| --- | --- | --- | --- | --- |
+| `vosk-model-small-en-us-0.15` (default) | 68 MB | 181 MB | ~2.1 s | 3.4 % |
+| `vosk-model-en-us-0.22-lgraph` | 204 MB | 396 MB | ~10.5 s | 4.4 % |
+
+The large model triples memory (assistant total would be 1305 MB, over the
+1.3 GB target) and is about five times slower on this CPU without being more
+accurate, so the small model stays the default. `stt_model` accepts any Vosk
+model folder from <https://alphacephei.com/vosk/models>; if the configured
+folder is missing, JARVIS loads the largest `vosk-model-*` in `models/` and
+logs which one it used.
 
 ### Conversation behaviour
 
@@ -128,10 +144,19 @@ the model:
 Every tool declares argument names and types, a permission level and a
 timeout. The registry validates arguments and turns failures into spoken
 sentences. Anything that changes the machine — writing, deleting, moving,
-running a command, closing an application, reading the clipboard — asks first:
-"Say confirm to proceed, or cancel" (also `/confirm` and `/cancel`), and the
-prompt names what will be affected (for example the applications a
-close-all would touch). Reads, status queries, opening things, screenshots
+running a command, closing an application, reading the clipboard — asks first
+with one short sentence that names exactly what will be affected, for example
+`Create the folder "reports". Please confirm to continue.` (or `/confirm` and
+`/cancel`). Confirmations are deliberately brief because they are spoken
+aloud; a long request is summarised by its actions, never read back.
+
+A sentence that names several file actions is run as one plan: `create a
+folder named drafts and in that folder write hello to file notes.txt and copy
+notes.txt to backup.txt` asks once, then runs the steps in order and stops at
+the first failure, reporting which step failed. Later relative paths stay
+inside the folder just created, `in that folder` can be said explicitly, and
+`create two files - a.txt & b.txt` expands to one action per name. A clause
+that is not understood ends the plan there, so nothing is guessed. Reads, status queries, opening things, screenshots
 and notifications run immediately. `close_app` affects only the
 application named in the request: its visible windows are asked to close,
 so unsaved work prompts instead of being discarded, and a windowless
@@ -163,8 +188,9 @@ Voice mode is the default. JARVIS prints a short greeting, then waits:
 - Press **Ctrl+Space** (or Enter on an empty console line) and speak. Audio is
   captured until you pause, transcribed offline, answered by the local model
   and spoken aloud.
-- **Escape** stops speech immediately; pressing push-to-talk while JARVIS talks
-  also cuts it off and starts listening.
+- **Escape** stops speech immediately. The key is polled directly, so it works
+  even when the global keyboard hook cannot be installed; pressing
+  push-to-talk while JARVIS talks also cuts it off and starts listening.
 - You can type at the `You:` prompt at any time; typed and spoken requests share
   the same conversation state.
 - `/stop` clears a pending interrupt and `/voices` lists installed SAPI voices.
@@ -209,7 +235,8 @@ The suite runs offline and needs no microphone or speaker: configuration,
 conversation context, context trimming, summarization, answer modes, commands,
 clarification, SQLite history/resume/deletion, intent routing, arithmetic and
 date parsing, JSON validation, tool argument validation, sandboxed file
-operations, app/command allowlists, confirmation flows, VAD segmentation,
+operations, app/command allowlists, confirmation flows, multi-step file plans,
+Escape interruption, VAD segmentation,
 resampling, device resolution, speech text cleanup and SAPI rate mapping. The
 Vosk transcription test is skipped when the model is absent and desktop tools
 are only validated, never exercised, by the suite.
@@ -263,12 +290,21 @@ logs/                   Runtime logs (git-ignored)
   applications with a visible window, so background and startup programs
   stay untouched.
 - File tools are sandboxed to `[tools] root` (the project folder by default).
-  Point it at `D:\\` only if you want JARVIS to manage the whole drive.
+  Set it to your Desktop, for example `root = "C:/Users/ADMIN/Desktop"`, to
+  create and edit files there; a request for a location outside the root is
+  refused with that hint instead of failing obscurely.
+- Multi-step plans cover explicit file actions only (create, write, read,
+  list, search, rename, copy, move, delete). A request that needs follow-up
+  reasoning, such as "write the file location in it", is not planned: the
+  sequence stops at that clause and the confirmation shows what will run.
 - Summarization costs one extra model call once the transcript grows past
   `summarize_after`, which adds a few seconds on this CPU.
-- Speech recognition uses the small English Vosk model: English only, and
-  noisy rooms or strong accents reduce accuracy. Raise `vad_aggressiveness`
-  or set a specific `input_device` if the microphone picks up background noise.
+- Speech recognition is English-only and limited by the small Vosk model:
+  long sentences, names and file extensions transcribe poorly, and a short
+  command is the reliable form. The lgraph model is not a win on this CPU
+  (measured above). Set a specific `input_device` if the microphone picks up
+  background noise, and lower `vad_aggressiveness` to keep quiet syllables
+  that level 2 drops.
 - Web search in `core/tools.py` is the legacy scraper; it returns unreliable
   results and is no longer used by `main.py`. It is rebuilt in Phase 4.
 - Generation runs at ~5 tok/s on this CPU, so a 250-token detailed answer

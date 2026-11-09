@@ -25,13 +25,38 @@ def normalize_transcript(text):
   return cleaned
 
 
+def _model_size(path):
+  try:
+    return sum(
+        item.stat().st_size for item in path.rglob("*") if item.is_file()
+    )
+  except OSError:
+    return 0
+
+
+def resolve_model(path):
+  """Return the configured model, or the best sibling Vosk model available.
+
+  Accuracy is limited by the model, so when a better model has been
+  downloaded into ``models/`` it is used instead of failing on a stale path.
+  """
+  if path.is_dir():
+    return path
+  candidates = [
+      entry for entry in path.parent.glob("vosk-model-*") if entry.is_dir()
+  ]
+  if not candidates:
+    raise SttError(f"Vosk model not found: {path}")
+  best = max(candidates, key=_model_size)
+  log.warning("Vosk model %s missing; using %s", path.name, best.name)
+  return best
+
+
 class VoskTranscriber:
   """Transcribe 16 kHz mono int16 PCM with a local Vosk model."""
 
   def __init__(self, model_path):
-    path = Path(model_path)
-    if not path.is_dir():
-      raise SttError(f"Vosk model not found: {path}")
+    path = resolve_model(Path(model_path))
     try:
       from vosk import KaldiRecognizer, Model, SetLogLevel
     except ImportError as exc:

@@ -16,6 +16,16 @@ log = logging.getLogger(__name__)
 
 SAFE = "safe"
 CONFIRM = "confirm"
+# A confirmation is spoken aloud, so it must stay one short sentence.
+MAX_PREVIEW_CHARS = 180
+
+
+def shorten(text, limit=MAX_PREVIEW_CHARS):
+  """Squash a confirmation line to a length that is quick to read or hear."""
+  text = " ".join(str(text).split())
+  if len(text) <= limit:
+    return text
+  return text[: limit - 3].rstrip(" ,;") + "..."
 
 
 class ToolError(Exception):
@@ -78,13 +88,15 @@ class Tool:
     """Human-readable confirmation line for a pending action."""
     if self.preview is not None:
       try:
-        return str(self.preview(arguments))
+        return shorten(str(self.preview(arguments)))
       except ToolError as exc:
         return f"{self.description} ({exc})"
       except Exception:
         log.debug("Tool preview failed", exc_info=True)
     details = ", ".join(f"{key} {value!r}" for key, value in arguments.items())
-    return self.description + (f" ({details})" if details else "")
+    return shorten(
+        self.description + (f" ({details})" if details else "")
+    )
 
 
 class ToolRegistry:

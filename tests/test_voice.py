@@ -215,6 +215,52 @@ class SpeechTextTests(unittest.TestCase):
     self.assertEqual(_sapi_rate(80), -5)
 
 
+class InterruptTests(unittest.TestCase):
+  """Escape must stop speech even when the keyboard hook is unavailable."""
+
+  def make(self):
+    from voice.interface import VoiceInterface
+
+    return VoiceInterface(load_settings(), lambda text: text)
+
+  def test_escape_during_speech_sets_the_interrupt(self):
+    import threading
+    import time
+    from unittest import mock
+
+    from voice import interface as voice_interface
+
+    voice = self.make()
+    voice._speaking = True
+    with mock.patch.object(
+        voice_interface, "_escape_was_pressed", return_value=True
+    ):
+      thread = threading.Thread(target=voice._watch_escape, daemon=True)
+      thread.start()
+      time.sleep(0.1)
+      voice._stop_watch.set()
+      thread.join(timeout=1.0)
+    self.assertTrue(voice._interrupt.is_set())
+
+  def test_escape_while_idle_is_ignored(self):
+    import threading
+    import time
+    from unittest import mock
+
+    from voice import interface as voice_interface
+
+    voice = self.make()
+    with mock.patch.object(
+        voice_interface, "_escape_was_pressed", return_value=True
+    ):
+      thread = threading.Thread(target=voice._watch_escape, daemon=True)
+      thread.start()
+      time.sleep(0.1)
+      voice._stop_watch.set()
+      thread.join(timeout=1.0)
+    self.assertFalse(voice._interrupt.is_set())
+
+
 class TranscriberTests(unittest.TestCase):
   def test_missing_model_raises(self):
     from voice.stt import VoskTranscriber

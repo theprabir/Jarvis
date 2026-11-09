@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import queue
 import threading
+import time
 
 from voice.audio import Microphone, listen, resolve_input_device
 from voice.errors import AudioError, SpeechError, SttError, VoiceError
@@ -20,6 +21,24 @@ log = logging.getLogger(__name__)
 
 EXIT_COMMANDS = {"exit", "quit", "bye"}
 ESCAPE_KEY = "esc"
+ESCAPE_VK = 0x1B
+POLL_S = 0.03
+
+
+def _escape_was_pressed():
+  """True when Escape was pressed since the previous check.
+
+  The keyboard hook only fires when it can be installed; polling the key
+  state works in every session, including an elevated console where the hook
+  is silently ignored.
+  """
+  try:
+    import ctypes
+
+    state = ctypes.windll.user32.GetAsyncKeyState(ESCAPE_VK)
+  except Exception:  # pragma: no cover - not on Windows
+    return False
+  return bool(state & 0x0001)
 
 
 class VoiceInterface:
@@ -37,6 +56,9 @@ class VoiceInterface:
     self._stt = None
     self._hotkeys = []
     self._running = False
+    self._speaking = False
+    self._listening = False
+    self._stop_watch = threading.Event()
 
   # -- setup ------------------------------------------------------------
 
@@ -48,6 +70,9 @@ class VoiceInterface:
 
     self._stt = VoskTranscriber(self.voice_config.resolved_stt_model)
     self._install_hotkeys()
+    threading.Thread(
+        target=self._watch_escape, name="jarvis-escape", daemon=True
+    ).start()
     threading.Thread(
         target=self._read_console, name="jarvis-console", daemon=True
     ).start()
@@ -65,16 +90,31 @@ class VoiceInterface:
       self._hotkeys.append(
           keyboard.add_hotkey(self.voice_config.ptt_key, self._on_ptt)
       )
-      self._hotkeys.append(keyboard.add_hotkey(ESCAPE_KEY, self._interrupt.set))
     except Exception as exc:
       log.warning(
           "Could not register the push-to-talk key %r: %s",
           self.voice_config.ptt_key,
           exc,
       )
+    try:
+      self._hotkeys.append(keyboard.add_hotkey(ESCAPE_KEY, self._on_escape))
+    except Exception as exc:
+      log.info("Escape hotkey unavailable (%s); polling instead", exc)
 
   def _on_ptt(self):
     self._ptt.set()
+
+  def _on_escape(self):
+    if self._speaking or self._listening:
+      self._interrupt.set()
+
+  def _watch_escape(self):
+    """Turn a fresh Escape press into an interrupt, without a keyboard hook."""
+    while not self._stop_watch.is_set():
+      if _escape_was_pressed() and (self._speaking or self._listening):
+        log.info("Escape pressed; stopping speech and audio input")
+        self._interrupt.set()
+      time.sleep(POLL_S)
 
   def _read_console(self):
     """Read typed input in a daemon thread; an empty line starts recording."""
@@ -140,6 +180,7 @@ class VoiceInterface:
     self._interrupt.clear()
     print("[Listening...]")
     try:
+      self._listening = True
       utterance = listen(
           self._mic, self.voice_config, abort=self._interrupt.is_set
       )
@@ -147,6 +188,8 @@ class VoiceInterface:
       log.error("Microphone failure: %s", exc)
       self._say("I could not access the microphone, sir.")
       return True
+    finally:
+      self._listening = False
 
     if not utterance.pcm:
       print("Jarvis: I didn't catch any speech.")
@@ -178,6 +221,7 @@ class VoiceInterface:
     if self._tts is None:
       return
     self._interrupt.clear()
+    self._speaking = True
     try:
       self._tts.speak(
           text,
@@ -189,12 +233,15 @@ class VoiceInterface:
       )
     except SpeechError as exc:
       log.error("Speech failure: %s", exc)
+    finally:
+      self._speaking = False
 
   def _voice_names(self):
     return WindowsVoice.available_voices() or ["none"]
 
   def _close(self):
     self._running = False
+    self._stop_watch.set()
     self._interrupt.set()
     for handle in self._hotkeys:
       try:

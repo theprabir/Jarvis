@@ -46,6 +46,20 @@ TOOL_INTENTS = frozenset(
     }
 )
 
+FILE_INTENTS = frozenset(
+    {
+        "create_folder",
+        "write_file",
+        "read_file",
+        "list_files",
+        "search_files",
+        "rename_path",
+        "copy_path",
+        "move_path",
+        "delete_path",
+    }
+)
+
 CONVERSATION_INTENTS = frozenset(
     {
         "time",
@@ -276,6 +290,53 @@ def _clean(value):
   return str(value or "").strip().strip('"').strip("'").strip()
 
 
+# A spoken request often packs several actions into one sentence. Only the
+# first action is handled, so paths stop at the next instruction instead of
+# swallowing it ("create a folder named docs & write readme.md in it").
+_ACTION_WORD = (
+    r"(?:create|make|write|put|add|save|delete|remove|read|list|open"
+    r"|launch|run|move|copy|rename|close|send|set|find|search|in|inside)"
+)
+_CLAUSE_BREAK = re.compile(
+    rf"\s*(?:;|&|\bthen\b|,\s*(?:and|then)\s+(?={_ACTION_WORD}\b)"
+    rf"|\s+(?:and|then)\s+(?={_ACTION_WORD}\b))\s*"
+)
+_LOCATION_SUFFIX = re.compile(
+    r"\s+(?:on|in|at)\s+(?:the\s+|my\s+)?"
+    r"(?P<where>desktop|documents|downloads)\b.*$"
+)
+_HOME_FOLDERS = {
+    "desktop": "Desktop",
+    "documents": "Documents",
+    "downloads": "Downloads",
+}
+
+
+def _first_clause(text):
+  """Return the part of a request before the next instruction."""
+  match = _CLAUSE_BREAK.search(text)
+  return (text[: match.start()] if match else text).strip(" ,.;")
+
+
+def _target_path(text, named=False):
+  """Extract one path from a request without its extra instructions."""
+  value = _first_clause(_clean(text))
+  if named:
+    value = re.sub(r"^(?:named|called)\s+", "", value).strip()
+  location = _LOCATION_SUFFIX.search(value)
+  if location:
+    name = value[: location.start()].strip()
+    where = _HOME_FOLDERS[location.group("where")]
+    return f"~/{where}/{name}" if name else ""
+  if named:
+    parent = re.search(r"\s+in\s+(?P<parent>[^\s]+)\s*$", value)
+    if parent and parent.group("parent").lower() not in _HOME_FOLDERS:
+      name = value[: parent.start()].strip()
+      if name:
+        return f"{parent.group('parent').strip('/')}/{name}"
+  return value
+
+
 def _looks_like_url(token):
   text = _clean(token)
   if not text:
@@ -389,7 +450,9 @@ def recognize_computer(text, allowed_apps=(), allowed_commands=()):
       lowered,
   )
   if match:
-    return Intent("read_file", 0.9, {"path": _clean(match.group("path"))})
+    path = _target_path(match.group("path"))
+    if path:
+      return Intent("read_file", 0.9, {"path": path})
 
   match = re.match(
       r"^(?:write|save) (?P<content>.+?) (?:to|into) (?:the )?file"
@@ -397,14 +460,16 @@ def recognize_computer(text, allowed_apps=(), allowed_commands=()):
       lowered,
   )
   if match:
-    return Intent(
-        "write_file",
-        0.9,
-        {
-            "path": _clean(match.group("path")),
-            "content": _clean(match.group("content")),
-        },
-    )
+    path = _target_path(match.group("path"))
+    if path:
+      return Intent(
+          "write_file",
+          0.9,
+          {
+              "path": path,
+              "content": _clean(match.group("content")),
+          },
+      )
 
   match = re.match(
       r"^create (?:a )?(?:file|note) (?P<path>\S+?)"
@@ -422,10 +487,13 @@ def recognize_computer(text, allowed_apps=(), allowed_commands=()):
     )
 
   match = re.match(
-      r"^create (?:a )?(?:folder|directory) (?P<path>.+)$", lowered
+      r"^create (?:a )?(?:new )?(?:folder|directory) (?P<path>.+)$",
+      lowered,
   )
   if match:
-    return Intent("create_folder", 0.9, {"path": _clean(match.group("path"))})
+    path = _target_path(match.group("path"), named=True)
+    if path:
+      return Intent("create_folder", 0.9, {"path": path})
 
   match = re.match(
       r"^(?:delete|remove) (?:the )?(?:file|folder|directory)"
@@ -433,14 +501,16 @@ def recognize_computer(text, allowed_apps=(), allowed_commands=()):
       lowered,
   )
   if match:
-    return Intent("delete_path", 0.9, {"path": _clean(match.group("path"))})
+    path = _target_path(match.group("path"))
+    if path:
+      return Intent("delete_path", 0.9, {"path": path})
 
   match = re.match(
       r"^(?:list|show) (?:the )?files(?: in (?P<path>.+))?$", lowered
   )
   if match:
     return Intent(
-        "list_files", 0.9, {"path": _clean(match.group("path") or ".")}
+        "list_files", 0.9, {"path": _target_path(match.group("path") or ".")}
     )
 
   match = re.match(
@@ -454,7 +524,7 @@ def recognize_computer(text, allowed_apps=(), allowed_commands=()):
         0.9,
         {
             "name": _clean(match.group("name")),
-            "path": _clean(match.group("path") or "."),
+            "path": _target_path(match.group("path") or "."),
         },
     )
 
@@ -465,7 +535,7 @@ def recognize_computer(text, allowed_apps=(), allowed_commands=()):
         0.9,
         {
             "source": _clean(match.group("source")),
-            "target": _clean(match.group("target")),
+            "target": _target_path(match.group("target")),
         },
     )
 
@@ -476,7 +546,7 @@ def recognize_computer(text, allowed_apps=(), allowed_commands=()):
         0.9,
         {
             "source": _clean(match.group("source")),
-            "target": _clean(match.group("target")),
+            "target": _target_path(match.group("target")),
         },
     )
 
@@ -487,7 +557,7 @@ def recognize_computer(text, allowed_apps=(), allowed_commands=()):
         0.9,
         {
             "source": _clean(match.group("source")),
-            "target": _clean(match.group("target")),
+            "target": _target_path(match.group("target")),
         },
     )
 
@@ -541,6 +611,122 @@ def recognize_computer(text, allowed_apps=(), allowed_commands=()):
     )
 
   return None
+
+
+# -- multi-step file plans ----------------------------------------------
+
+_FILE_VERB = (
+    r"(?:create|make|write|save|delete|remove|read|list|rename|copy|move"
+    r"|find|search|add|put)"
+)
+_PLAN_SPLIT = re.compile(
+    rf"\s*(?:;|\bthen\b"
+    rf"|&\s*(?=(?:{_FILE_VERB}\b|in that folder\b|inside that folder\b"
+    rf"|in it\b|inside it\b))"
+    rf"|,\s*(?={_FILE_VERB}\b)"
+    rf"|\band\b\s*(?=(?:{_FILE_VERB}\b|in that folder\b"
+    rf"|inside that folder\b|in it\b|inside it\b)))\s*"
+)
+_FOLDER_PREFIX = re.compile(
+    r"^(?:in|inside|into)\s+(?:that|the|this)\s+folder\b[,:]?\s*"
+    r"|^(?:in|inside)\s+it\b[,:]?\s*"
+)
+_MANY_FILES = re.compile(
+    r"^create\s+(?:(?P<count>\d+|two|three|four|five)\s+)?files?"
+    r"(?:\s+(?:named|called))?\s*[:\-]?\s*(?P<names>.+)$"
+)
+_COUNT_WORDS = {"two": 2, "three": 3, "four": 4, "five": 5}
+
+
+def _expand_file_list(clause):
+  """Turn "create two files - a.txt & b.txt" into one action per file."""
+  match = _MANY_FILES.match(clause)
+  if not match or not match.group("count"):
+    return None
+  raw = match.group("count")
+  expected = int(raw) if raw.isdigit() else _COUNT_WORDS.get(raw, 0)
+  names = [
+      _clean(part)
+      for part in re.split(r"\s*(?:,|&|\band\b)\s*", match.group("names"))
+      if _clean(part)
+  ]
+  if not expected or len(names) != expected:
+    return None
+  return [
+      Intent("write_file", 0.9, {"path": name, "content": ""})
+      for name in names
+  ]
+
+
+def _inside_folder(arguments, folder):
+  """Prefix relative paths in an action with the folder just created."""
+  if not folder:
+    return dict(arguments)
+  updated = dict(arguments)
+  for key in ("path", "source", "target"):
+    value = str(updated.get(key) or "")
+    if value and not value.startswith(("~", "/")) and ":" not in value:
+      updated[key] = f"{folder}/{value}"
+  return updated
+
+
+def _merge_prefixes(clauses):
+  """Re-attach a bare "in that folder" to the action that follows it."""
+  merged = []
+  prefix = ""
+  for clause in clauses:
+    if _FOLDER_PREFIX.fullmatch(clause):
+      prefix = clause
+      continue
+    merged.append(f"{prefix} {clause}".strip() if prefix else clause)
+    prefix = ""
+  if prefix:
+    merged.append(prefix)
+  return merged
+
+
+def plan_file_actions(text, allowed_apps=(), allowed_commands=()):
+  """Split one sentence into an ordered plan of file actions.
+
+  Every clause must state an explicit action. The plan stops at the first
+  clause that is not understood, so nothing is guessed, and ``None`` is
+  returned unless at least two actions were found.
+  """
+  lowered = (text or "").lower().strip().rstrip("?.!")
+  if not lowered or lowered.startswith("/"):
+    return None
+  clauses = [
+      clause.strip(" ,;.-")
+      for clause in _PLAN_SPLIT.split(lowered)
+      if clause.strip(" ,;.-")
+  ]
+  clauses = _merge_prefixes(clauses)
+  actions = []
+  folder = ""
+  for clause in clauses:
+    prefix = _FOLDER_PREFIX.match(clause)
+    scoped = prefix is not None
+    if prefix:
+      clause = clause[prefix.end():].strip()
+    expanded = _expand_file_list(clause)
+    if expanded is None:
+      intent = recognize_computer(clause, allowed_apps, allowed_commands)
+      if intent is None or intent.name not in FILE_INTENTS:
+        break
+      expanded = [intent]
+    for intent in expanded:
+      # A folder created in the same sentence is a sibling unless the user
+      # asked for it inside the previous one.
+      if intent.name == "create_folder" and not scoped:
+        arguments = dict(intent.entities)
+      else:
+        arguments = _inside_folder(intent.entities, folder)
+      actions.append((intent.name, arguments, clause))
+      if intent.name == "create_folder":
+        folder = arguments["path"]
+  if len(actions) < 2:
+    return None
+  return actions
 
 
 class IntentRouter:

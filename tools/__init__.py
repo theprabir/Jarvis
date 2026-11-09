@@ -28,6 +28,11 @@ def build_registry(settings):
   config = settings.tools
   registry = ToolRegistry()
 
+  def shown(value):
+    """Render a path briefly for a spoken confirmation."""
+    text = str(value or "").replace("\\", "/").strip()
+    return text[:-1] if len(text) > 1 and text.endswith("/") else text
+
   def add(
       name,
       description,
@@ -112,6 +117,14 @@ def build_registry(settings):
       required=("command",),
       permission=CONFIRM,
       timeout_s=config.command_timeout_s + 5.0,
+      preview=lambda arguments: (
+          f'Run the command {arguments.get("command", "")}'
+          + (
+              f' {arguments["arguments"]}'
+              if arguments.get("arguments")
+              else ""
+          )
+      ),
   )
 
   # Files and folders
@@ -129,6 +142,10 @@ def build_registry(settings):
       {"path": str, "content": str},
       required=("path", "content"),
       permission=CONFIRM,
+      preview=lambda arguments: (
+          f'Write {len(arguments.get("content", ""))} characters to'
+          f' "{shown(arguments.get("path"))}"'
+      ),
   )
   add(
       "create_folder",
@@ -137,6 +154,9 @@ def build_registry(settings):
       {"path": str},
       required=("path",),
       permission=CONFIRM,
+      preview=lambda arguments: (
+          f'Create the folder "{shown(arguments.get("path"))}"'
+      ),
   )
   add(
       "rename_path",
@@ -145,6 +165,10 @@ def build_registry(settings):
       {"source": str, "target": str},
       required=("source", "target"),
       permission=CONFIRM,
+      preview=lambda arguments: (
+          f'Rename "{shown(arguments.get("source"))}" to'
+          f' "{shown(arguments.get("target"))}"'
+      ),
   )
   add(
       "copy_path",
@@ -153,6 +177,10 @@ def build_registry(settings):
       {"source": str, "target": str},
       required=("source", "target"),
       permission=CONFIRM,
+      preview=lambda arguments: (
+          f'Copy "{shown(arguments.get("source"))}" to'
+          f' "{shown(arguments.get("target"))}"'
+      ),
   )
   add(
       "move_path",
@@ -161,6 +189,10 @@ def build_registry(settings):
       {"source": str, "target": str},
       required=("source", "target"),
       permission=CONFIRM,
+      preview=lambda arguments: (
+          f'Move "{shown(arguments.get("source"))}" to'
+          f' "{shown(arguments.get("target"))}"'
+      ),
   )
   add(
       "delete_path",
@@ -169,6 +201,9 @@ def build_registry(settings):
       {"path": str},
       required=("path",),
       permission=CONFIRM,
+      preview=lambda arguments: (
+          f'Delete "{shown(arguments.get("path"))}"'
+      ),
   )
   add(
       "list_files",
@@ -226,6 +261,7 @@ def build_registry(settings):
       lambda: clipboard.read_clipboard(config),
       permission=CONFIRM,
       timeout_s=15.0,
+      preview=lambda arguments: "Read the clipboard",
   )
 
   return registry

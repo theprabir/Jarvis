@@ -145,6 +145,8 @@ class WebConfig:
   enabled: bool = True
   # auto = Brave when a key is present, otherwise DuckDuckGo.
   provider: str = "auto"
+  # Optional self-hosted SearXNG base URL, e.g. http://127.0.0.1:8888.
+  searx_url: str = ""
   max_results: int = 6
   max_queries: int = 2
   timeout_s: float = 12.0
@@ -292,8 +294,17 @@ def _validate(settings):
 
   web = settings.web
   _require(
-      web.provider in {"auto", "duckduckgo", "brave"},
-      "[web] provider must be auto, duckduckgo or brave",
+      web.provider in {"auto", "duckduckgo", "brave", "searxng"},
+      "[web] provider must be auto, duckduckgo, brave or searxng",
+  )
+  _require(
+      not web.searx_url
+      or web.searx_url.startswith(("http://", "https://")),
+      "[web] searx_url must start with http:// or https://",
+  )
+  _require(
+      web.provider != "searxng" or bool(web.searx_url),
+      "[web] provider = searxng needs searx_url",
   )
   _require(1 <= web.max_results <= 20, "[web] max_results must be 1-20")
   _require(1 <= web.max_queries <= 4, "[web] max_queries must be 1-4")

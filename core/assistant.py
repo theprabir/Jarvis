@@ -52,14 +52,13 @@ CLARIFY_REPLY = (
 SEARCH_SYSTEM_PROMPT = (
     "You are a research assistant. Answer the question in one or two"
     " sentences using only the evidence below, and cite the source you used"
-    " in square brackets, for example [2]. Use no outside knowledge. If no"
-    " source mentions the subject at all, reply with exactly: NOT_FOUND"
+    " in square brackets, for example [2]. Use no outside knowledge."
 )
 
 SEARCH_RETRY_PROMPT = (
-    "Read the evidence and answer the question directly in one sentence."
-    " Give the specific fact or figure it contains and end with the source"
-    " number in square brackets, for example [2]. Use no outside knowledge."
+    "Answer the question in one sentence using the evidence below, and cite"
+    " the source number in square brackets, like [2]. Use no outside"
+    " knowledge and do not repeat these instructions."
 )
 
 NOT_FOUND_MARKER = "NOT_FOUND"
@@ -72,6 +71,24 @@ def _has_citation(answer, count):
     if marker.isdigit() and 1 <= int(marker) <= count:
       return True
   return False
+
+
+def _strip_preamble(answer):
+  """Drop an instruction or meta sentence the model repeated back."""
+  text = (answer or "").strip()
+  if not text:
+    return ""
+  paragraphs = [part.strip() for part in text.split("\n") if part.strip()]
+  while len(paragraphs) > 1:
+    first = paragraphs[0].lower()
+    if "question" in first and (
+        "evidence" in first or "instruction" in first
+    ):
+      paragraphs.pop(0)
+      continue
+    break
+  cleaned = "\n".join(paragraphs)
+  return re.sub(r"^\s*answer\s*:\s*", "", cleaned, flags=re.I).strip()
 
 
 def _supported(answer, evidence):
@@ -253,7 +270,9 @@ class Assistant:
     if self.router.is_confident(intent):
       if intent.name == "web_search":
         return self._answer_web(
-            intent.entities.get("query", ""), user_text=text
+            intent.entities.get("query", ""),
+            user_text=text,
+            wikipedia=bool(intent.entities.get("wikipedia")),
         )
       if intent.name in TOOL_INTENTS:
         answer = self._run_tool(text, intent)
@@ -310,7 +329,7 @@ class Assistant:
         return None
     return self._searcher
 
-  def _answer_web(self, query, user_text=None):
+  def _answer_web(self, query, user_text=None, wikipedia=False):
     """Answer a question from fetched web evidence, with sources."""
     query = " ".join((query or "").split())
     if not query:
@@ -320,7 +339,7 @@ class Assistant:
       return WEB_DISABLED
 
     try:
-      bundle = searcher.search(query)
+      bundle = searcher.search(query, wikipedia=wikipedia)
     except SearchError as exc:
       log.warning("Web search failed for %r: %s", query, exc)
       return f"I couldn't search the web, sir: {exc}."
@@ -329,28 +348,32 @@ class Assistant:
       return WEB_EMPTY
 
     answer, ok = self._complete(
-        self._search_messages(query, bundle.evidence, SEARCH_SYSTEM_PROMPT),
+        self._search_messages(
+            query, bundle.evidence, SEARCH_SYSTEM_PROMPT
+        ),
         self.conversation.max_tokens(),
     )
     if not ok:
       return answer
+    answer = _strip_preamble(answer)
 
     if not self._grounded(answer, bundle):
       log.info("Retrying search answer for %r with a direct prompt", query)
       answer, ok = self._complete(
           self._search_messages(
-              query, bundle.evidence, SEARCH_RETRY_PROMPT
+              query, bundle.wide_evidence(), SEARCH_RETRY_PROMPT
           ),
           self.conversation.max_tokens(),
       )
       if not ok:
         return answer
+      answer = _strip_preamble(answer)
 
     if not self._grounded(answer, bundle):
       log.info("Search evidence did not answer %r", query)
       return WEB_UNGROUNDED
 
-    final = f"{answer.strip()}\n\n{self._sources(bundle.results)}"
+    final = f"{answer.strip()}\n\n{self._sources(bundle.sources)}"
     self._remember(user_text or query, final)
     log.info(
         "Answered %r from %s source(s) via %s",

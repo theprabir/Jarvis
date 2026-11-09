@@ -113,6 +113,10 @@ allowed_commands = ["ipconfig", "whoami", "systeminfo", "tasklist", "hostname", 
 enabled = true
 # auto = Brave when BRAVE_API_KEY is set, otherwise DuckDuckGo.
 provider = "auto"
+# Optional self-hosted SearXNG instance (docker run searxng/searxng).
+# When set, auto mode tries it before DuckDuckGo, which gives a stable
+# alternative to scraped results. provider = "searxng" uses it alone.
+searx_url = ""
 # Results considered per query, and query variants sent to the provider.
 max_results = 6
 max_queries = 2

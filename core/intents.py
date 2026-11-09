@@ -384,8 +384,9 @@ _WEB_PATTERNS = (
         " news",
     ),
     (r"^(?:news|headlines)\s+(?:about|on)\s+(?P<query>.+)$", " news"),
-    (r"^wikipedia\s+(?P<query>.+)$", " site:en.wikipedia.org"),
 )
+
+_WIKIPEDIA_RE = re.compile(r"^wikipedia\s+(?:for\s+)?(?P<query>.+)$")
 
 
 def recognize_web(text):
@@ -393,6 +394,13 @@ def recognize_web(text):
   lowered = (text or "").lower().strip().rstrip("?.!")
   if not lowered:
     return None
+  match = _WIKIPEDIA_RE.match(lowered)
+  if match:
+    query = _clean(match.group("query"))
+    if len(query) >= 2:
+      return Intent(
+          "web_search", 0.9, {"query": query, "wikipedia": True}
+      )
   for pattern, suffix in _WEB_PATTERNS:
     match = re.match(pattern, lowered)
     if not match:

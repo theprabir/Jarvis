@@ -12,12 +12,28 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from core.assistant import Assistant, _has_citation, _supported
+from core.assistant import (
+    Assistant,
+    _has_citation,
+    _strip_preamble,
+    _supported,
+)
 from core.config import ConfigError, WebConfig, load_settings
 from core.intents import IntentRouter
 from web.base import SearchError, SearchResult
+from web.extract import PageError, best_passage
+from web.search import (
+    SearchBundle,
+    Searcher,
+    _evidence,
+    _fetch_pages,
+    _query_variants,
+    _rank,
+    is_fresh,
+)
+from web.searxng import SearxngProvider
+from web.wikipedia import WikipediaProvider
 from web.cache import SearchCache
-from web.search import SearchBundle, Searcher, _evidence, _query_variants, _rank
 
 
 class FakeProvider:
@@ -28,7 +44,7 @@ class FakeProvider:
     self.error = error
     self.queries = []
 
-  def search(self, query, limit):
+  def search(self, query, limit, fresh=False):
     self.queries.append(query)
     if self.error is not None:
       raise self.error
@@ -38,6 +54,26 @@ class FakeProvider:
         for item in self.results
     ]
     return items[:limit]
+
+
+class FakeResponse:
+  def __init__(self, payload, status=200):
+    self.status_code = status
+    self._payload = payload
+
+  def json(self):
+    return self._payload
+
+
+class FakeHttp:
+  def __init__(self, payload, status=200):
+    self.payload = payload
+    self.status = status
+    self.calls = []
+
+  def get(self, url, **kwargs):
+    self.calls.append((url, kwargs))
+    return FakeResponse(self.payload, self.status)
 
 
 class FakeClient:
@@ -63,7 +99,7 @@ class FakeSearcher:
     self.error = error
     self.queries = []
 
-  def search(self, query):
+  def search(self, query, wikipedia=False):
     self.queries.append(query)
     if self.error is not None:
       raise self.error
@@ -246,13 +282,18 @@ class WebIntentTests(unittest.TestCase):
         "google rust ownership rules": "rust ownership rules",
         "find information about the voyager probes": "the voyager probes",
         "latest news about ai regulation": "ai regulation news",
-        "wikipedia tokyo": "tokyo site:en.wikipedia.org",
     }
     for text, query in cases.items():
       intent = self.router.route(text)
       self.assertIsNotNone(intent, text)
       self.assertEqual(intent.name, "web_search", text)
       self.assertEqual(intent.entities["query"], query, text)
+
+  def test_wikipedia_uses_the_wikipedia_provider(self):
+    intent = self.router.route("wikipedia tokyo")
+    self.assertEqual(
+        intent.entities, {"query": "tokyo", "wikipedia": True}
+    )
 
   def test_web_command(self):
     intent = self.router.route("/web quantum computing")
@@ -284,6 +325,23 @@ class ConfigTests(unittest.TestCase):
     with tempfile.TemporaryDirectory() as tmp:
       path = Path(tmp) / "settings.toml"
       path.write_text('[web]\nprovider = "bing"\n', encoding="utf-8")
+      with self.assertRaises(ConfigError):
+        load_settings(path)
+
+  def test_searxng_provider_needs_a_url(self):
+    with tempfile.TemporaryDirectory() as tmp:
+      path = Path(tmp) / "settings.toml"
+      path.write_text('[web]\nprovider = "searxng"\n', encoding="utf-8")
+      with self.assertRaises(ConfigError):
+        load_settings(path)
+
+  def test_searx_url_must_be_http(self):
+    with tempfile.TemporaryDirectory() as tmp:
+      path = Path(tmp) / "settings.toml"
+      path.write_text(
+          '[web]\nprovider = "searxng"\nsearx_url = "127.0.0.1:8888"\n',
+          encoding="utf-8",
+      )
       with self.assertRaises(ConfigError):
         load_settings(path)
 
@@ -362,6 +420,44 @@ class GroundedAnswerTests(unittest.TestCase):
     self.assertIn("Sources:", reply)
     self.assertEqual(len(client.calls), 2)
 
+  def test_grounding_retry_uses_wider_evidence(self):
+    body = "tokyo capital japan " * 80
+    bundle = SearchBundle(
+        "capital of japan",
+        [SearchResult("Tokyo", "https://example.com/tokyo", text=body)],
+        "[1] Tokyo\n" + "tokyo is the capital of japan",
+        "fake",
+        sources=[
+            SearchResult("Tokyo", "https://example.com/tokyo", text=body)
+        ],
+        terms=["capital", "japan"],
+    )
+    assistant, client, _searcher = self.make(
+        replies=["NOT_FOUND", "Tokyo is the capital of Japan [1]."],
+        bundle=bundle,
+    )
+    reply = assistant.reply("search the web for capital of japan")
+    self.assertIn("Sources:", reply)
+    self.assertGreater(
+        len(client.calls[1][-1]["content"]),
+        len(client.calls[0][-1]["content"]),
+    )
+
+  def test_prompt_preamble_is_not_spoken(self):
+    assistant, client, _searcher = self.make(
+        replies=[
+            "Here are the answers to the question using only the evidence"
+            " provided:\nTokyo is the capital of Japan [1]."
+        ],
+        bundle=self.bundle(),
+    )
+    reply = assistant.reply("search the web for capital of japan")
+    self.assertTrue(
+        reply.startswith("Tokyo is the capital of Japan [1]")
+    )
+    self.assertNotIn("Here are the answers", reply)
+    self.assertEqual(len(client.calls), 1)
+
   def test_uncited_answer_is_never_spoken(self):
     assistant, _client, _searcher = self.make(
         replies=["Tokyo is the capital of Japan."], bundle=self.bundle()
@@ -395,7 +491,162 @@ class GroundedAnswerTests(unittest.TestCase):
     self.assertEqual(client.calls, [])
 
 
+class PassageTests(unittest.TestCase):
+  def test_passage_finds_a_fact_beyond_the_opening_text(self):
+    filler = "The city has many parks. " * 40
+    text = filler + "The current population is 122,225,684 people."
+    passage = best_passage(text, ["population", "japan"], 200)
+    self.assertIn("122,225,684", passage)
+    self.assertLessEqual(len(passage), 200)
+
+  def test_short_text_is_returned_whole(self):
+    self.assertEqual(
+        best_passage("short page", ["short"], 200), "short page"
+    )
+
+
+class FreshnessTests(unittest.TestCase):
+  def test_news_questions_are_detected(self):
+    self.assertTrue(is_fresh("latest news about python"))
+    self.assertTrue(is_fresh("what is the weather in kolkata"))
+    self.assertFalse(is_fresh("capital of japan"))
+
+  def test_recent_results_rank_first_for_fresh_questions(self):
+    old = SearchResult(
+        "AI regulation news", "https://example.com/old",
+        snippet="ai regulation news", published="2020-01-01",
+    )
+    new = SearchResult(
+        "AI regulation news", "https://example.com/new",
+        snippet="ai regulation news", published="2026-11-08",
+    )
+    ranked = _rank("latest ai regulation news", [old, new], fresh=True)
+    self.assertEqual(ranked[0].url, "https://example.com/new")
+
+
+class ProviderTests(unittest.TestCase):
+  def test_wikipedia_returns_article_text(self):
+    payload = {
+        "query": {
+            "pages": {
+                "2": {"index": 2, "title": "Japan", "extract": "x" * 200},
+                "1": {
+                    "index": 1,
+                    "title": "Tokyo",
+                    "extract": "Tokyo is the capital of Japan. " * 10,
+                },
+            }
+        }
+    }
+    http = FakeHttp(payload)
+    results = WikipediaProvider(http, 5).search("tokyo", 2)
+    self.assertEqual(results[0].title, "Tokyo")
+    self.assertIn("en.wikipedia.org/wiki/Tokyo", results[0].url)
+    self.assertIn("capital of Japan", results[0].text)
+    self.assertTrue(http.calls[0][1]["headers"]["User-Agent"])
+
+  def test_searxng_reads_results_and_dates(self):
+    payload = {
+        "results": [
+            {
+                "title": "AI rules",
+                "url": "https://example.com/a",
+                "content": "new rules",
+                "publishedDate": "2026-11-06T10:00:00",
+            }
+        ]
+    }
+    http = FakeHttp(payload)
+    results = SearxngProvider(http, "http://localhost:8888/").search(
+        "ai", 3
+    )
+    self.assertEqual(results[0].published, "2026-11-06")
+    self.assertEqual(http.calls[0][0], "http://localhost:8888/search")
+
+  def test_searxng_http_error_is_reported(self):
+    with self.assertRaises(SearchError):
+      SearxngProvider(
+          FakeHttp({}, 502), "http://localhost:8888"
+      ).search("ai", 3)
+
+
+class FetchTests(unittest.TestCase):
+  def test_wikipedia_prefers_an_exact_title_match(self):
+    payload = {
+        "query": {
+            "pages": {
+                "1": {
+                    "index": 1,
+                    "title": "Tokyo",
+                    "extract": "Tokyo is the capital of Japan. " * 8,
+                },
+                "2": {
+                    "index": 2,
+                    "title": "Tokyo!",
+                    "extract": "Tokyo! is a 2008 anthology film. " * 8,
+                },
+            }
+        }
+    }
+    results = WikipediaProvider(FakeHttp(payload), 5).search("tokyo", 6)
+    self.assertEqual([item.title for item in results], ["Tokyo"])
+
+  def test_blocked_pages_are_skipped_for_readable_sources(self):
+    results = [
+        SearchResult(f"R{index}", f"https://site{index}.example/page")
+        for index in range(1, 6)
+    ]
+    fetched = []
+
+    def fake_download(client, url, **kwargs):
+      fetched.append(url)
+      if "site1" in url or "site2" in url:
+        raise PageError("HTTP 403")
+      return (
+          "<html><body><p>" + ("readable text " * 20) + "</p></body></html>"
+      )
+
+    config = SimpleNamespace(
+        extract_pages=2, timeout_s=10, max_page_bytes=1000
+    )
+    from unittest import mock
+
+    with mock.patch("web.search.download", fake_download):
+      _fetch_pages(None, results, config)
+    self.assertEqual(sum(1 for item in results if item.text), 2)
+    self.assertGreaterEqual(len(fetched), 4)
+
+  def test_snippet_only_sources_are_labelled(self):
+    evidence = _evidence(
+        [
+            SearchResult(
+                "Tokyo",
+                "https://example.com/tokyo",
+                snippet="tokyo is the capital",
+            )
+        ],
+        500,
+    )
+    self.assertIn("snippet only", evidence)
+
+
 class GroundingTests(unittest.TestCase):
+  def test_prompt_echo_is_removed(self):
+    answer = (
+        "Here are the answers to the question in one or two sentences,"
+        " using only the evidence provided:\n"
+        "Tokyo is the capital of Japan [1]."
+    )
+    self.assertEqual(
+        _strip_preamble(answer), "Tokyo is the capital of Japan [1]."
+    )
+
+  def test_a_real_answer_is_left_alone(self):
+    self.assertEqual(
+        _strip_preamble("Tokyo is the capital [1]."),
+        "Tokyo is the capital [1].",
+    )
+
   def test_citations_must_point_at_a_source(self):
     self.assertTrue(_has_citation("Tokyo [2].", 3))
     self.assertFalse(_has_citation("Tokyo [4].", 3))

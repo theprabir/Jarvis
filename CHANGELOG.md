@@ -4,6 +4,93 @@ All notable changes to JARVIS are recorded here. Versions follow the project
 convention: each completed feature set increments the patch number; completing
 all feature sets in a phase increments the middle number and resets the patch.
 
+## v0.1.9 — 2026-11-09
+
+**Search fixes — every v0.1.8 limitation addressed**
+
+### Implemented functionality
+
+- **Wikipedia lookup through the MediaWiki API** — `wikipedia X` no longer
+  becomes a `site:en.wikipedia.org` search. `web/wikipedia.py` calls
+  `action=query&generator=search&prop=extracts` and returns article
+  introductions as fetched text, preferring an exact title match so
+  `wikipedia tokyo` cannot drift to `Tokyo!` (a film). If the lookup fails the
+  normal web search is used and reported as such.
+- **Passage-based evidence** — `best_passage` scores windows of consecutive
+  sentences and sends the part of each page that best matches the question,
+  instead of the first N characters. A fact buried deep in a page is now
+  reachable without raising the token budget.
+- **Wider fetching** — up to `extract_pages + 3` candidates are tried until
+  `extract_pages` readable sources exist; video, social and binary URLs are
+  skipped. A page that cannot be fetched still contributes its snippet, now
+  labelled `(snippet only)` so snippets and fetched text stay distinguishable.
+- **Recency-aware ranking** — `is_fresh` detects news-shaped questions
+  (`latest`, `news`, `today`, `weather`, the current year). Those use the
+  provider's news results with publication dates (DuckDuckGo news, Brave
+  `freshness=pw`/`page_age`, SearXNG `time_range`/`publishedDate`), and dated
+  results receive a 0.1–0.3 bonus by age.
+- **Provider resilience** — optional self-hosted SearXNG through
+  `[web] searx_url` (`web/searxng.py`), tried before DuckDuckGo in `auto` mode
+  and usable alone with `provider = "searxng"`; `provider` is validated, and
+  `searx_url` must be an HTTP(S) URL.
+- **Wider retry** — the single grounded retry now uses double the evidence
+  (2000 characters), so a first refusal has more material to work with.
+
+### Bug fixes found while verifying
+
+- Wikimedia returned **HTTP 403** for the first User-Agent. Four forms were
+  tested: agents without contact information are refused, an agent with an
+  email or URL is accepted. The provider now sends a descriptive User-Agent
+  linking to the API etiquette page.
+- A failed Wikipedia lookup silently fell back to DuckDuckGo and cached the
+  web results under the Wikipedia key; the provider label then claimed
+  `wikipedia`. The label now reflects what actually answered, and the cache
+  version was raised (v5) so stale entries are never reused.
+- The model echoed instructions: the first prompt produced the
+  `NOT_FOUND`-style over-refusal measured earlier, and the retry prompt leaked
+  `The specific fact or figure is:` into answers, while a later prompt was
+  quoted back as `Here are the answers to the question …`. The prompts are now
+  neutral, the `NOT_FOUND` instruction is gone (deterministic citation and
+  support checks still reject unsupported answers), and `_strip_preamble`
+  removes a repeated instruction paragraph before the answer is spoken.
+
+### Files created or modified
+
+New `web/wikipedia.py`, `web/searxng.py`. Modified `web/base.py` (published
+date, date parsing), `web/extract.py` (`best_passage`), `web/search.py`
+(Wikipedia routing, freshness, source selection, wider fetching, cache v5),
+`web/duckduckgo.py` (news results, dates), `web/brave.py` (freshness, dates),
+`core/assistant.py`, `core/intents.py`, `core/config.py`,
+`config/settings.toml`, `tests/test_web.py`, `README.md`, `CHANGELOG.md`.
+
+### Testing
+
+- 229 unit tests pass (14 new: passage selection, freshness detection and
+  ranking, Wikipedia and SearXNG parsing, exact-title filtering, fetch
+  overscan, snippet labelling, preamble cleanup, wider-evidence retry,
+  SearXNG config validation). `compileall` clean.
+- Live provider checks: `wikipedia tokyo` returned the Tokyo article with
+  3760 characters of text in under a second on a cache miss path, with no
+  snippet-only marker; `latest news about artificial intelligence` returned
+  results dated 2026-11-07 to 2026-11-09; a population query produced 1000
+  characters of normal evidence and exactly 2000 on the retry.
+- End to end with `llama-server`: `wikipedia tokyo` answered
+  `The capital of Japan is Tokyo, as stated in [1]` with one source in 36.6 s
+  (no preamble, no extra sources). `search the web for the population of Japan`
+  answered `approximately 122,225,684 … [1]` in 47.5 s, including the grounded
+  retry.
+
+### Known limitations
+
+- Evidence is still capped at three sources and 1000 characters (2000 on the
+  retry); a fact split across many pages can be missed.
+- Login- and CAPTCHA-gated pages cannot be read: they contribute a labelled
+  snippet, and other candidates are fetched instead.
+- DuckDuckGo scraping can break without notice; `searx_url` (self-hosted
+  SearXNG) or `BRAVE_API_KEY` is the dependable path.
+- Only English Wikipedia is queried, and recency ranking depends on the
+  provider returning publication dates (plain web results often do not).
+
 ## v0.1.8 — 2026-11-09
 
 **Internet search (feature set 4.5)**

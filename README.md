@@ -178,18 +178,19 @@ block and may only answer from it.
 | Step | Behaviour |
 | --- | --- |
 | Query variants | The question plus a keyword form (`max_queries`, default 2), capped and deduplicated |
-| Providers | `ddgs`/DuckDuckGo by default; Brave when `BRAVE_API_KEY` is set, selected by `[web] provider` |
-| Ranking | Duplicate URLs merged, results sharing no term with the question dropped, title matches ranked first |
-| Extraction | Top `extract_pages` pages are fetched and reduced to main text (`trafilatura` if installed, otherwise `lxml`) |
-| Budget | At most `context_chars` (1000, roughly 250 tokens) of evidence reaches the model |
+| Providers | `ddgs`/DuckDuckGo by default; Brave when `BRAVE_API_KEY` is set; an optional self-hosted SearXNG via `[web] searx_url`; Wikipedia through the MediaWiki API for `wikipedia X` |
+| Ranking | Duplicate URLs merged, results sharing no term with the question dropped, title matches ranked first; news questions also prefer recently published results |
+| Extraction | Up to `extract_pages` readable pages are fetched (extra candidates are tried when a site blocks the fetch) and reduced to main text (`trafilatura` if installed, otherwise `lxml`); each source contributes the passage that best matches the question |
+| Budget | At most `context_chars` (1000, roughly 250 tokens) of evidence reaches the model; the retry after an ungrounded answer uses double that |
 | Grounding | The answer must cite an existing source, and its figures or words must appear in the evidence; one retry is allowed, then JARVIS says the sources did not answer instead of guessing |
 | Sources | The reply ends with a numbered `Sources:` list |
 | Cache | Results cached in `data/search_cache.db` for `cache_ttl_s`; stale entries (up to 7 days) are used when the network fails |
 
 Ask with `search the web for …`, `look up …`, `google …`, `find information
-about …`, `latest news about …`, `wikipedia …`, or explicitly with `/web
-QUESTION`. A plain `search for notes in drafts` still searches files, not the
-web. Without a network connection the reply is a clear failure message, never
+about …`, `latest news about …` (dated news results), `wikipedia …` (the
+article introduction from the MediaWiki API, not a search hit), or explicitly
+with `/web QUESTION`. A plain `search for notes in drafts` still searches
+files, not the web. Without a network connection the reply is a clear failure message, never
 a made-up answer. Page fetching prefers `primp` (browser TLS fingerprint)
 because many sites reject plain `httpx` with HTTP 403; `httpx` is the fallback.
 
@@ -337,11 +338,14 @@ logs/                   Runtime logs (git-ignored)
   list, search, rename, copy, move, delete). A request that needs follow-up
   reasoning, such as "write the file location in it", is not planned: the
   sequence stops at that clause and the confirmation shows what will run.
-- Web search reads only the top three pages and at most 1000 characters of
-  evidence. Pages behind a login, a CAPTCHA or heavy JavaScript may contribute
-  a snippet only, and the answer is limited to what those pages said - the
-  model is instructed to answer `NOT_FOUND` rather than fill gaps from
-  memory. Results are ranked by term overlap, not by publication date.
+- Web search still reads at most three sources and 1000 characters of
+  evidence (2000 on the retry), so a fact split across several pages can be
+  missed. Pages behind a login or a CAPTCHA cannot be read at all: such a
+  source is labelled `(snippet only)` and other candidates are fetched
+  instead, but its snippet is still what the answer can use. DuckDuckGo
+  scraping can break without notice - set `searx_url` for a self-hosted
+  SearXNG, or `BRAVE_API_KEY` for a supported API. The Wikipedia lookup sends
+  a descriptive User-Agent because Wikimedia blocks anonymous ones.
 - Summarization costs one extra model call once the transcript grows past
   `summarize_after`, which adds a few seconds on this CPU.
 - Speech recognition is English-only and limited by the small Vosk model:
@@ -351,7 +355,8 @@ logs/                   Runtime logs (git-ignored)
   background noise, and lower `vad_aggressiveness` to keep quiet syllables
   that level 2 drops.
 - Web search in `core/tools.py` is the legacy scraper; it returns unreliable
-  results and is no longer used by `main.py`. It is rebuilt in Phase 4.
+  results and is no longer used by `main.py`. The supported search lives in
+  `web/`.
 - Generation runs at ~5 tok/s on this CPU, so a 250-token detailed answer
   takes about 50 seconds; a reply that hits its limit is continued once,
   not generated without bound.

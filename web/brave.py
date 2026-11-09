@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from web.base import SearchError, SearchResult
+from web.base import SearchError, SearchResult, normalize_date
 
 log = logging.getLogger(__name__)
 
@@ -21,13 +21,16 @@ class BraveProvider:
     self._api_key = (api_key or "").strip()
     self._timeout = timeout_s
 
-  def search(self, query, limit):
+  def search(self, query, limit, fresh=False):
     if not self._api_key:
       raise SearchError("the Brave API key is not configured")
+    params = {"q": query, "count": min(20, max(1, int(limit)))}
+    if fresh:
+      params["freshness"] = "pw"
     try:
       response = self._client.get(
           SEARCH_URL,
-          params={"q": query, "count": min(20, max(1, int(limit)))},
+          params=params,
           headers={
               "Accept": "application/json",
               "X-Subscription-Token": self._api_key,
@@ -60,6 +63,9 @@ class BraveProvider:
                 title=title,
                 url=url,
                 snippet=snippet,
+                published=normalize_date(
+                    item.get("page_age") or item.get("age")
+                ),
                 provider=self.name,
             )
         )

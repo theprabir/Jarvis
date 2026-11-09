@@ -14,6 +14,8 @@ import re
 import httpx
 from lxml import html as lxml_html
 
+from web.base import words
+
 log = logging.getLogger(__name__)
 
 USER_AGENT = (
@@ -47,6 +49,7 @@ BOILERPLATE = re.compile(
 )
 MIN_PARAGRAPH = 40
 MAX_TEXT_CHARS = 6000
+SENTENCE = re.compile(r"(?<=[.!?])\s+")
 
 _primp_client = None
 _primp_timeout = 0.0
@@ -137,6 +140,45 @@ def extract_text(markup, url=""):
   if text:
     return text
   return _lxml_text(markup)
+
+
+def best_passage(text, terms=(), limit=600):
+  """Return the part of ``text`` that best matches ``terms``.
+
+  Search engines rank the top of a page highly, but the sentence that answers
+  the question often sits much further down. The window of consecutive
+  sentences containing the most distinct query terms is returned instead of
+  the first ``limit`` characters, so facts deeper in a page stay reachable
+  without raising the evidence budget.
+  """
+  body = " ".join((text or "").split())
+  if not body or len(body) <= limit:
+    return body
+  wanted = {str(term).lower() for term in terms if term}
+  sentences = [piece for piece in SENTENCE.split(body) if piece]
+  if not wanted or len(sentences) == 1:
+    return _clip(body, limit)
+
+  best_start = 0
+  best_score = -1
+  start = 0
+  size = 0
+  for index, sentence in enumerate(sentences):
+    size += len(sentence) + 1
+    while size > limit and start < index:
+      size -= len(sentences[start]) + 1
+      start += 1
+    score = len(wanted & set(words(" ".join(sentences[start:index + 1]))))
+    if score > best_score:
+      best_score = score
+      best_start = start
+  return _clip(" ".join(sentences[best_start:]), limit)
+
+
+def _clip(text, limit):
+  if len(text) <= limit:
+    return text
+  return text[: limit - 3].rstrip(" ,;.") + "..."
 
 
 def _trafilatura(markup, url):

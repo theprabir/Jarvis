@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from urllib.parse import urlsplit, urlunsplit
 
 WORD = re.compile(r"[a-z0-9]+")
+DATE = re.compile(r"(\d{4})-(\d{2})-(\d{2})")
 
 STOPWORDS = frozenset(
     {
@@ -59,6 +60,12 @@ def words(text):
   return WORD.findall((text or "").lower())
 
 
+def normalize_date(value):
+  """Return an ISO ``YYYY-MM-DD`` date from provider metadata, or ``""``."""
+  match = DATE.search(str(value or ""))
+  return match.group(0) if match else ""
+
+
 def normalize_url(url):
   """Return a comparison key for a URL, or ``""`` when it is unusable."""
   if not url:
@@ -83,6 +90,7 @@ class SearchResult:
   text: str = ""
   score: float = 0.0
   provider: str = ""
+  published: str = ""
 
   def to_dict(self):
     return {
@@ -92,6 +100,7 @@ class SearchResult:
         "text": self.text,
         "score": round(float(self.score), 4),
         "provider": self.provider,
+        "published": self.published,
     }
 
   @classmethod
@@ -110,6 +119,7 @@ class SearchResult:
         text=str(data.get("text") or ""),
         score=float(data.get("score") or 0.0),
         provider=str(data.get("provider") or ""),
+        published=normalize_date(data.get("published")),
     )
 
   def content(self, limit):

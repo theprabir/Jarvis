@@ -13,7 +13,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 from lxml import html as lxml_html
 
-from web.base import SearchError, SearchResult
+from web.base import SearchError, SearchResult, normalize_date
 
 log = logging.getLogger(__name__)
 
@@ -46,8 +46,10 @@ class DuckDuckGoProvider:
     self._client = client
     self._timeout = timeout_s
 
-  def search(self, query, limit):
-    results = self._via_client(query, limit)
+  def search(self, query, limit, fresh=False):
+    results = self._via_news(query, limit) if fresh else []
+    if not results:
+      results = self._via_client(query, limit)
     if not results:
       results = self._via_html(query, limit)
     if not results:
@@ -77,6 +79,39 @@ class DuckDuckGoProvider:
                 title=title,
                 url=url,
                 snippet=snippet,
+                published=normalize_date(row.get("date")),
+                provider=self.name,
+            )
+        )
+      if len(results) >= limit:
+        break
+    return results
+
+  def _via_news(self, query, limit):
+    """Recent articles with publication dates, for news-shaped questions."""
+    client_class = _ddgs_class()
+    if client_class is None or not hasattr(client_class, "news"):
+      return []
+    try:
+      with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        with client_class() as ddgs:
+          rows = list(ddgs.news(query, max_results=limit))
+    except Exception as exc:
+      log.info("DuckDuckGo news failed (%s); using text search", exc)
+      return []
+    results = []
+    for row in rows:
+      title = " ".join(str(row.get("title") or "").split())
+      url = str(row.get("url") or row.get("href") or "").strip()
+      snippet = " ".join(str(row.get("body") or "").split())
+      if title and url:
+        results.append(
+            SearchResult(
+                title=title,
+                url=url,
+                snippet=snippet,
+                published=normalize_date(row.get("date")),
                 provider=self.name,
             )
         )

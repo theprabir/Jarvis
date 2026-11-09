@@ -85,6 +85,8 @@ CONVERSATION_INTENTS = frozenset(
         "search_memory",
         "list_memory",
         "delete_memory",
+        "learned_memory",
+        "memory_episodes",
         "unit_convert",
         "text_transform",
         "format_size",
@@ -642,6 +644,17 @@ _MEMORY_DELETE = re.compile(
     r"^(?:forget|delete)\s+(?:the\s+)?memor(?:y|ies)"
     r"(?:\s+(?:about|of|for))?\s+(?P<query>.+)$"
 )
+_MEMORY_LEARNED = re.compile(
+    r"^(?:show|list)\s+(?:me\s+)?(?:what\s+you(?:'ve| have)\s+learned"
+    r"|learned\s+memories)$"
+    r"|^what\s+have\s+you\s+learned(?:\s+about\s+me)?$"
+)
+_MEMORY_EPISODES = re.compile(
+    r"^(?:show|list)\s+(?:me\s+)?(?:recent\s+)?"
+    r"(?:episodes|events)$"
+    r"|^what\s+(?:have\s+we\s+(?:talked|spoken)\s+about"
+    r"|did\s+we\s+(?:talk|discuss)\s+about)$"
+)
 
 
 def recognize_memory(text):
@@ -667,6 +680,10 @@ def recognize_memory(text):
             "temporary": bool(match.groupdict().get("temporary")),
         },
     )
+  if _MEMORY_LEARNED.match(lowered):
+    return Intent("learned_memory", 0.9, {})
+  if _MEMORY_EPISODES.match(lowered):
+    return Intent("memory_episodes", 0.9, {})
   if _MEMORY_LIST.match(lowered):
     return Intent("list_memory", 0.9, {})
   match = _MEMORY_RECALL.match(lowered)

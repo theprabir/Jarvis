@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 import re
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 
 from brain.errors import LLMConnectionError, LLMError, LLMTimeoutError
 from brain.llm_client import get_client
@@ -25,6 +25,13 @@ from core.conversation import (
 )
 from core.history import HistoryError, HistoryStore
 from core.intents import TOOL_INTENTS, IntentRouter, plan_file_actions
+from core.learning import (
+    ShortTermMemory,
+    episode_summary,
+    episode_topics,
+    extract_candidates,
+    subject_for,
+)
 from core.memory import (
     CATEGORIES,
     USAGE_KINDS,
@@ -142,7 +149,8 @@ FAILURE_REPLIES = {
 HELP_TEXT = (
     " Commands: /new starts a fresh conversation, /mode short|detailed|technical"
     " changes how much I say, /web TEXT answers from web sources, /history"
-    " shows recent exchanges, /memory manages saved memories, /intent TEXT"
+    " shows recent exchanges, /memory manages saved and learned memories"
+    " (list, learned, episodes, explain ID), /intent TEXT"
     " shows the detected intent as JSON, /tools lists computer tools, /confirm"
     " and /cancel handle pending actions, /forget deletes saved history after"
     " confirmation. Timers, reminders, conversions, weather and text tools work"
@@ -228,6 +236,10 @@ class Assistant:
     self._memory_clear_pending = False
     self._pending_tool = None
     self._pending_plan = None
+    self._episode_clear_pending = False
+    self._session = ShortTermMemory(settings.memory.short_term_items)
+    self._learned = set()
+    self._last_episode = ""
     self._searcher = None
     self._weather = None
     self._timers = None
@@ -263,7 +275,13 @@ class Assistant:
     return self._session_id
 
   def reply(self, text):
-    """Answer one user message (typed or transcribed) with conversation context."""
+    """Answer one user message and learn from the exchange afterwards."""
+    answer = self._reply(text)
+    self._learn(text, answer)
+    return answer
+
+  def _reply(self, text):
+    """Answer one user message (typed or transcribed) with context."""
     text = (text or "").strip()
     if not text:
       return "I didn't catch that, sir."
@@ -330,6 +348,74 @@ class Assistant:
       conversation.add(text, answer)
       self._record(text, answer)
     return answer
+
+  def _learn(self, text, answer):
+    """Extract durable candidates and an expiring episode from one turn."""
+    user_text = " ".join((text or "").split())
+    self._session.add(user_text, answer)
+    if self._memory is None or not self._settings.memory.auto_learn:
+      return
+    if not user_text or user_text.startswith("/"):
+      return
+    config = self._settings.memory
+    summary = episode_summary(user_text, answer)
+    if summary and summary != self._last_episode:
+      try:
+        self._memory.add_episode(
+            self._session_id,
+            summary,
+            episode_topics(user_text),
+            ttl_days=config.episodic_ttl_days,
+            max_episodes=config.episodic_items,
+        )
+        self._last_episode = summary
+      except MemoryStoreError as exc:
+        log.warning("Could not save episode: %s", exc)
+    for candidate in extract_candidates(user_text):
+      if candidate.confidence < config.learn_min_confidence:
+        continue
+      key = candidate.content.lower()
+      if key in self._learned:
+        continue
+      existing = self._memory.find_by_subject(candidate.subject)
+      if (
+          existing
+          and existing.get("source") == "explicit"
+          and existing["content"].lower() != key
+      ):
+        log.info(
+            "Kept explicit memory #%s over a learned conflict",
+            existing["id"],
+        )
+        continue
+      try:
+        memory_id, created = self._memory.add(
+            candidate.category,
+            candidate.content,
+            importance=candidate.importance,
+            source="learned",
+            confidence=candidate.confidence,
+            subject=candidate.subject,
+            expires_at=self._expiry(config.learned_ttl_days),
+        )
+      except MemoryStoreError as exc:
+        log.warning("Could not learn a memory: %s", exc)
+        continue
+      self._learned.add(key)
+      if created:
+        log.info(
+            "Learned memory #%s (%s, importance %s, confidence %.2f)",
+            memory_id,
+            candidate.subject or "no subject",
+            candidate.importance,
+            candidate.confidence,
+        )
+
+  @staticmethod
+  def _expiry(days):
+    return (
+        datetime.now(timezone.utc) + timedelta(days=max(1, int(days)))
+    ).isoformat(timespec="seconds")
 
   def set_notifier(self, callback):
     """Route timer and reminder notifications through the interface."""
@@ -600,6 +686,8 @@ class Assistant:
         "search_memory",
         "list_memory",
         "delete_memory",
+        "learned_memory",
+        "memory_episodes",
     }:
       return self._memory_reply(intent)
     if intent.name == "unit_convert":
@@ -764,10 +852,23 @@ class Assistant:
   # -- memory -----------------------------------------------------------
 
   def _memory_context(self):
-    """Persistent memories that belong in the system prompt."""
+    """Reconstruct prompt context from memory plus the current session."""
     if self._memory is None:
       return ""
-    return self._memory.prompt_block(self._settings.memory.inject_items)
+    query = " ".join(
+        text for text, _answer in self._session.recent(4)
+    )
+    block = self._memory.context_block(
+        query=query,
+        limit=self._settings.memory.inject_items,
+        episode_limit=2,
+        max_chars=700,
+    )
+    if not self._config.enabled and len(self._session) >= 1:
+      summary = self._session.summary(240)
+      if summary:
+        block = (block + "\nSession so far: " + summary).strip()
+    return block
 
   def _note_usage(self, name, entities):
     """Count apps, folders and websites the user actually works with."""
@@ -781,9 +882,11 @@ class Assistant:
       self._memory.note_usage("folder", entities.get("path"))
 
   def _save_memory(self, category, content, temporary=False):
+    key = subject_for(content) if not temporary else None
+    replaced = self._memory.find_by_subject(key) if key else None
     try:
       _memory_id, created = self._memory.add(
-          category, content, temporary=temporary
+          category, content, temporary=temporary, subject=key
       )
     except MemoryStoreError as exc:
       log.warning("Could not save memory: %s", exc)
@@ -792,6 +895,10 @@ class Assistant:
       return "I already remember that, sir."
     if temporary:
       return f"Saved to temporary memory: {content}."
+    if replaced:
+      return (
+          f"Updated what I remembered about {key}: {content}."
+      )
     return f"Saved to memory: {content}."
 
   def _remember_memory(self, intent):
@@ -814,11 +921,39 @@ class Assistant:
       text = item["content"]
       if len(text) > 80:
         text = text[:77].rstrip() + "..."
-      label = " [temporary]" if item["temporary"] else ""
+      tags = []
+      if item["temporary"]:
+        tags.append("temporary")
+      if item.get("source") == "learned":
+        tags.append("learned")
+      if item.get("importance", 1) >= 4:
+        tags.append(f"i{item['importance']}")
+      label = f" [{' '.join(tags)}]" if tags else ""
       lines.append(
           f"[{item['id']}] ({item['category']}) {text}{label}"
       )
     return title + "\n" + "\n".join(lines)
+
+  def _explain_memory(self, memory_id):
+    item = self._memory.get(memory_id)
+    if item is None:
+      return "There is no memory with that id, sir."
+    lines = [
+        f"[{item['id']}] {item['content']}",
+        f"Category: {item['category']}",
+        f"Source: {item.get('source') or 'explicit'}",
+        f"Importance: {item.get('importance', 1)}/5,"
+        f" confidence: {float(item.get('confidence') or 1.0):.2f}",
+        f"Created: {item['created_at'][:10]},"
+        f" updated: {item['updated_at'][:10]}",
+    ]
+    if item.get("subject"):
+      lines.append(f"Subject: {item['subject']}")
+    if item.get("expires_at"):
+      lines.append(f"Expires: {item['expires_at'][:10]}")
+    if item.get("superseded_by"):
+      lines.append(f"Replaced by memory {item['superseded_by']}")
+    return "\n".join(lines)
 
   def _memory_reply(self, intent):
     if self._memory is None:
@@ -826,6 +961,18 @@ class Assistant:
     if intent.name == "list_memory":
       return self._format_memories(
           "Saved memories:", self._memory.list()
+      )
+    if intent.name == "learned_memory":
+      return self._format_memories(
+          "Learned memories:", self._memory.list(source="learned")
+      )
+    if intent.name == "memory_episodes":
+      rows = self._memory.recent_episodes(limit=5)
+      if not rows:
+        return "I don't have any recent episodes, sir."
+      return "Recent events:\n" + "\n".join(
+          f"[{row['id']}] {row['created_at'][:10]}: {row['summary']}"
+          for row in rows
       )
     query = intent.entities.get("query", "")
     if intent.name == "search_memory":
@@ -915,6 +1062,36 @@ class Assistant:
       return "Most used:\n" + "\n".join(
           f"{item['value']} ({item['uses']} uses)" for item in rows
       )
+    if action == "learned":
+      return self._format_memories(
+          "Learned memories:", self._memory.list(source="learned")
+      )
+    if action == "episodes":
+      if rest and rest[0].lower() == "clear":
+        if len(rest) > 1 and rest[1].lower() == "confirm":
+          if not self._episode_clear_pending:
+            return (
+                "Nothing to confirm, sir. Run /memory episodes clear first."
+            )
+          self._episode_clear_pending = False
+          removed = self._memory.clear_episodes()
+          return f"Deleted {removed} episodes, sir."
+        self._episode_clear_pending = True
+        return (
+            "This deletes every episodic summary. Run"
+            " /memory episodes clear confirm to proceed."
+        )
+      rows = self._memory.recent_episodes(limit=8)
+      if not rows:
+        return "I don't have any recent episodes, sir."
+      return "Recent events:\n" + "\n".join(
+          f"[{row['id']}] {row['created_at'][:10]}: {row['summary']}"
+          for row in rows
+      )
+    if action == "explain":
+      if len(rest) != 1 or not rest[0].isdigit():
+        return "Usage: /memory explain ID"
+      return self._explain_memory(int(rest[0]))
     if action == "clear":
       if rest and rest[0].lower() == "confirm":
         self._memory_clear_pending = False
@@ -929,8 +1106,8 @@ class Assistant:
           " to proceed."
       )
     return (
-        "Memory commands: list, search, add, temporary, edit, delete,"
-        " frequent, clear."
+        "Memory commands: list, learned, episodes, explain, search, add,"
+        " temporary, edit, delete, frequent, clear."
     )
 
   def _remember(self, user_message, answer):
@@ -1060,6 +1237,10 @@ class Assistant:
       self._session_id = uuid.uuid4().hex
       self._forget_pending = False
       self._memory_clear_pending = False
+      self._episode_clear_pending = False
+      self._session.clear()
+      self._learned.clear()
+      self._last_episode = ""
       self._pending_tool = None
       self._pending_plan = None
       return "Starting a new conversation, sir."

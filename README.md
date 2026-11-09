@@ -6,17 +6,19 @@ around a small local LLM (Llama 3.2 1B Instruct Q4_K_M) served by the existing
 deterministic Python modules do the audio, routing and tool work.
 
 **Current status:** Phase 1 (stabilization) and feature sets **4.1 Voice
-Interface**, **4.2 Conversation Intelligence**, **4.3 Basic Intelligence**,
-**4.4 Computer Interaction**, **4.5 Internet Search**, **4.6 Basic Memory**
-and **4.7 Utilities** complete. JARVIS listens through the microphone with
-push-to-talk, transcribes offline with Vosk, keeps multi-turn context across
-restarts, remembers explicitly saved preferences, facts, paths and folders,
-answers simple questions deterministically through Python, operates the
-computer through validated tools, searches the web and answers only from the
-fetched evidence with sources, converts units and text, reports the weather,
-runs timers and persisted reminders, falls back to the local model for
-everything else, and speaks through an interruptible Windows SAPI voice.
-Feature set 4.8 is next (see `PLANS-STACK-FEATURES.md`, `CHANGELOG.md`).
+Interface** through **4.8 Automatic Memory Learning** complete, released as
+**v0.2.0** as JARVIS moves into its moderate-advanced feature sets. JARVIS
+listens through the microphone with push-to-talk, transcribes offline with
+Vosk, keeps multi-turn context across restarts, remembers explicitly saved
+preferences, facts, paths and folders, learns high-confidence first-person
+facts with provenance and expiry, summarizes substantive exchanges as
+episodic memory, answers simple questions deterministically through Python,
+operates the computer through validated tools, searches the web and answers
+only from the fetched evidence with sources, converts units and text, reports
+the weather, runs timers and persisted reminders, falls back to the local
+model for everything else, and speaks through an interruptible Windows SAPI
+voice. Feature set 4.9 is next (see `PLANS-STACK-FEATURES.md`,
+`CHANGELOG.md`).
 
 ## Requirements
 
@@ -61,7 +63,7 @@ All runtime settings live in `config/settings.toml`:
 | `[conversation]` | Multi-turn context, answer mode, token limits, summarization, history database |
 | `[tools]` | File sandbox root, read/search limits, allowed applications and commands |
 | `[web]` | Search provider, result and query limits, page extraction, evidence budget, cache |
-| `[memory]` | Enable explicit memory, its SQLite file and how many memories reach the prompt |
+| `[memory]` | Enable memory, its SQLite file, automatic learning, retention and how many memories reach the prompt |
 | `[weather]` | Weather flag, metric or imperial units, default location and timeout |
 
 Unknown keys are rejected so typos fail fast. Override the file location with
@@ -175,34 +177,68 @@ commands must be listed in `config/settings.toml`.
 
 ### Memory
 
-Memory is explicit: JARVIS stores only what you ask it to remember. Nothing is
-promoted from the conversation automatically (that arrives with feature set
-4.8), and no conversation text is saved as a long-term fact. Memories live in
-`data/jarvis.db` next to the conversation history, with SQLite FTS5 search
-when the bundled SQLite provides it and a scored scan otherwise.
+Memory is layered rather than a transcript. Explicit memories are exactly what
+you ask JARVIS to remember. A deterministic learner also keeps a small set of
+high-confidence first-person statements (`my name is Alex`, `I prefer dark
+mode`, `I work at Acme`, `my projects folder is C:/dev`) as **learned**
+semantic memories, with a confidence score and an expiry date. Substantive
+exchanges become one-line **episodic** summaries, and a bounded session buffer
+reconstructs the current conversation. Questions, commands, greetings and
+assistant-directed text (`I like you`) are never stored, and the conversation
+is never saved wholesale as permanent memory.
+
+| Layer | Contents | Lifetime |
+| --- | --- | --- |
+| Short-term | recent exchanges in this session (`short_term_items`, 6) | session only |
+| Semantic | explicit and learned preferences, facts, paths and folders | explicit: permanent; learned: `learned_ttl_days` (180) |
+| Episodic | summaries of substantive requests with keywords | `episodic_ttl_days` (30), max `episodic_items` (200) |
+| Long-term | semantic and episodic rows in `data/jarvis.db` | across restarts |
 
 | Action | How |
 | --- | --- |
 | Save | `remember my name is Alex`, `remember the office is in Kolkata`, `remember this folder is C:/dev` |
 | Temporary | `remember for now that the meeting is at five` (deleted when JARVIS restarts) |
+| Learn | `my name is Alex`, `I prefer dark mode`, `I work at Acme`, `my projects folder is C:/dev` (automatic, high confidence only) |
 | Inspect | `what do you remember`, `show your memories`, `/memory` |
+| Learn list | `what have you learned`, `/memory learned` |
+| Episodes | `what did we talk about`, `/memory episodes`, then `/memory episodes clear confirm` |
+| Explain | `/memory explain ID` — source, category, importance, confidence, expiry and replacement |
 | Search | `what do you remember about Alex`, `search your memory for Kolkata`, `/memory search TEXT` |
 | Edit | `/memory edit ID new text` |
 | Delete | `forget memory about Kolkata`, `/memory delete ID` |
 | Bulk delete | `/memory clear` then `/memory clear confirm`; `/memory clear temporary` |
 | Frequent | `/memory frequent [app\|folder\|website]`, fed by app launches, opened folders and URLs |
 
+When two memories describe the same stable attribute — `name`, `residence`,
+`employer`, `job`, `age`, `birthday`, `favorite:<thing>` or a named folder —
+the older row is expired and linked through `superseded_by` instead of both
+competing in the prompt. The history stays available for transparency.
+Automatic learning never overwrites an explicit memory; use `remember ...` to
+correct it, which also records the old value as superseded.
+
 Categories are inferred (`preference`, `fact`, `path`, `folder`, `website`,
 `task`, `general`) and can be set explicitly with `/memory add category text`.
-Preferences and the newest facts are added to the system prompt, bounded by
-`inject_items` (6). Duplicate persistent memories are refreshed instead of
-duplicated.
+Importance is scored from 1 to 5, and retrieval ranks by term overlap,
+importance, recency and a preference boost. The best `inject_items` memories
+and the two most relevant episodes are combined into a bounded prompt block.
+Memories live in `data/jarvis.db` next to the conversation history, with SQLite
+FTS5 search when the bundled SQLite provides it and a scored scan otherwise.
+Duplicate persistent memories are refreshed instead of duplicated.
 
 ```toml
 [memory]
 enabled = true
 db = "data/jarvis.db"
 inject_items = 6
+# Learn stable first-person facts; questions and commands are ignored.
+auto_learn = true
+learn_min_confidence = 0.75
+# Learned semantic memories expire; explicit memories do not.
+learned_ttl_days = 180
+# Episodic summaries of substantive exchanges and the session buffer.
+episodic_ttl_days = 30
+episodic_items = 200
+short_term_items = 6
 ```
 
 ### Utilities, weather and timers
@@ -334,7 +370,10 @@ clarification, SQLite history/resume/deletion, intent routing, arithmetic and
 date parsing, JSON validation, tool argument validation, sandboxed file
 operations, app/command allowlists, confirmation flows, multi-step file plans,
 web search ranking, caching and grounded answers, explicit memory storage,
-search and prompt injection, unit conversions, text and size formatting,
+search and prompt injection, automatic candidate extraction and importance,
+conflict superseding and history, ranked retrieval, expiry, episodic
+summaries and controls, short-term session context, auto-learning disabled,
+unit conversions, text and size formatting,
 Open-Meteo response parsing, timer polling and reminder persistence, Escape
 interruption, VAD segmentation,
 resampling, device resolution, speech text cleanup and SAPI rate mapping. The
@@ -368,7 +407,8 @@ web/duckduckgo.py       DuckDuckGo provider (ddgs client plus HTML fallback)
 web/brave.py            Brave Search API provider
 web/extract.py          Page fetching (primp/httpx) and main-content extraction
 web/cache.py            Bounded SQLite search cache with stale fallback
-core/memory.py          Explicit memories, FTS5 search, temporary scope, usage
+core/memory.py          Layered memory store, FTS5 search, episodes, ranking
+core/learning.py        Candidate extraction, importance, episodes, short-term buffer
 core/utilities.py       Unit conversion, text, size, duration and reminder parsing
 core/timers.py          In-memory timers, persisted reminders and notifications
 core/weather.py         Open-Meteo geocoding and current conditions
@@ -415,10 +455,12 @@ logs/                   Runtime logs (git-ignored)
   scraping can break without notice - set `searx_url` for a self-hosted
   SearXNG, or `BRAVE_API_KEY` for a supported API. The Wikipedia lookup sends
   a descriptive User-Agent because Wikimedia blocks anonymous ones.
-- Memory stores explicit entries only and does not learn from conversations
-  until feature set 4.8. Search matches words rather than meaning (no
-  embeddings), duplicate detection is exact text, and there is a single user
-  profile with no per-project separation.
+- Memory matching is lexical (no embeddings) and automatic learning covers a
+  narrow set of first-person patterns; unusual phrasing is missed rather than
+  guessed. Learned facts expire after 180 days and episode summaries after 30,
+  older conflicts remain only as superseded history, duplicate detection is
+  exact text, and there is still a single user profile with no per-project
+  separation.
 - Frequent-usage counts cover apps, folders and URLs that went through the
   tools; a website opened in a browser by hand is not counted.
 - Unit conversion covers the built-in tables (length, mass, volume, speed,

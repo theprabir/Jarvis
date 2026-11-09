@@ -3,6 +3,100 @@
 All notable changes to JARVIS are recorded here. Versions follow the project
 convention: each completed feature set increments the patch number; completing
 all feature sets in a phase increments the middle number and resets the patch.
+**v0.2.0** begins the moderate-advanced line at the user's request; subsequent
+feature sets in this level increment the patch (v0.2.1, …), and completing the
+level increments the middle number.
+
+## v0.2.0 — 2026-11-09
+
+**Automatic memory learning (feature set 4.8) — moderate-advanced line begins**
+
+### Implemented functionality
+
+- **Layered memory** — short-term (session), semantic (explicit and learned),
+  episodic (expiring summaries) and long-term (SQLite across restarts) memory
+  now work together. The conversation itself is never saved wholesale as
+  permanent memory.
+- **Automatic candidate extraction** — a deterministic learner recognizes a
+  narrow set of high-confidence first-person statements, including name,
+  preferences, favourites, residence, employer, job, age, birthday, folders
+  and named personal attributes. Questions, commands, greetings, short
+  replies and assistant-directed text such as `I like you` are ignored.
+  `learn_min_confidence` (default 0.75) is enforced.
+- **Importance and categorisation** — candidates are scored from 1 to 5 using
+  category, importance cues, length and preference signals, then stored with
+  a category and optional conflict subject.
+- **Provenance and retention** — learned memories carry `source`, `confidence`
+  and `expires_at`; they expire after `learned_ttl_days` (180). Explicit
+  memories remain permanent, and `short_term_items` (6) bounds the session
+  buffer.
+- **Conflict detection** — `name`, `residence`, `employer`, `job`, `age`,
+  `birthday`, `favorite:<thing>` and named folders are treated as stable
+  attributes. A newer value expires the old row and links it through
+  `superseded_by`, so the prompt uses one current value while history remains
+  inspectable.
+- **Episodic memory** — substantive exchanges (six words or more, excluding
+  commands and greetings) become one-line summaries with keywords. Episodes
+  expire after `episodic_ttl_days` (30), are capped at `episodic_items` (200),
+  and can be ranked by relevance.
+- **Ranked retrieval and context reconstruction** — search reranks term
+  overlap, importance, recency and preference hints. `context_block` combines
+  the best semantic memories and recent episodes inside a bounded prompt
+  block; with conversation history disabled, the session buffer adds a
+  `Session so far` summary.
+- **Cross-session memory** — explicit and learned memories and episodes are
+  reloaded after a restart, while the short-term buffer resets with the
+  session.
+- **Transparency and controls** — `/memory learned` lists automatic memories,
+  `/memory episodes` shows summaries, `/memory explain ID` prints source,
+  importance, confidence, expiry and replacement, and the existing edit,
+  delete and clear commands work on learned memories too. `/memory episodes
+  clear` requires `confirm`. `/new` resets session state.
+- **Explicit corrections** — automatic learning never overwrites an explicit
+  memory; `remember ...` corrects it and records the previous value as
+  superseded.
+- **Configuration** — `[memory]` gains `auto_learn`, `learn_min_confidence`,
+  `learned_ttl_days`, `episodic_ttl_days`, `episodic_items` and
+  `short_term_items`, all validated at load time.
+
+### Files created or modified
+
+New `core/learning.py` and `tests/test_learning.py`. Modified `core/memory.py`
+(schema migration, episodes, subjects, conflicts, ranked retrieval, context
+block, expiry), `core/assistant.py` (learning wrapper, episode recording,
+learned/episode replies, `/memory explain`, `/new` reset, explicit conflict
+handling), `core/intents.py` (`learned_memory`, `memory_episodes`),
+`core/config.py` (`MemoryConfig` fields and validation),
+`config/settings.toml`, `README.md`, `CHANGELOG.md`.
+
+### Bug fixes found while verifying
+
+- The FTS path converted rows to dicts and then reranked them as if they were
+  rows, so `importance` became the string `"importance"` and search crashed.
+  `_search_fts` now returns raw rows and selects the new provenance columns.
+- The assistant-directed guard only matched `" you "`, so `I like you` was
+  learned as a preference; it now uses a word boundary.
+- `I am 34 years old` was not extracted because the age pattern required a
+  trailing clause; the age and `my age is` forms are now matched separately.
+- The session summary only appeared after two prior exchanges; it now starts
+  with the first prior turn.
+
+### Testing status
+
+All tests pass offline with `.venv\Scripts\python -m unittest discover -s
+tests`: **317 tests**, including 27 new learning tests covering extraction,
+importance, subjects, conflicts and history, ranking, expiry, episodes,
+short-term memory, cross-session persistence, auto-learning disabled,
+transparency and the assistant commands. `compileall` passes. No live model,
+microphone or speaker was needed.
+
+### Known limitations
+
+- Learning is lexical and pattern-based, so unusual phrasing is missed rather
+  than guessed; there are no embeddings.
+- Learned values expire after 180 days and episodes after 30; superseded rows
+  remain as history but are excluded from normal retrieval.
+- Still a single user profile with no per-project memory separation.
 
 ## v0.1.11 — 2026-11-09
 

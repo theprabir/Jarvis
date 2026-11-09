@@ -113,8 +113,15 @@ class MemoryConfig:
   enabled: bool = True
   # Explicit memories share the conversation database; tables are separate.
   db: str = "data/jarvis.db"
-  # Persistent memories included in the system prompt, newest first.
+  # Persistent memories included in the system prompt, ranked by relevance.
   inject_items: int = 6
+  # Automatic learning from high-confidence first-person statements.
+  auto_learn: bool = True
+  learn_min_confidence: float = 0.75
+  learned_ttl_days: int = 180
+  episodic_ttl_days: int = 30
+  episodic_items: int = 200
+  short_term_items: int = 6
 
   @property
   def resolved_db(self) -> Path:
@@ -313,6 +320,26 @@ def _validate(settings):
   _require(
       1 <= memory.inject_items <= 20,
       "[memory] inject_items must be 1-20",
+  )
+  _require(
+      0.5 <= memory.learn_min_confidence <= 1.0,
+      "[memory] learn_min_confidence must be 0.5-1.0",
+  )
+  _require(
+      1 <= memory.learned_ttl_days <= 3650,
+      "[memory] learned_ttl_days must be 1-3650",
+  )
+  _require(
+      1 <= memory.episodic_ttl_days <= 3650,
+      "[memory] episodic_ttl_days must be 1-3650",
+  )
+  _require(
+      10 <= memory.episodic_items <= 2000,
+      "[memory] episodic_items must be 10-2000",
+  )
+  _require(
+      2 <= memory.short_term_items <= 20,
+      "[memory] short_term_items must be 2-20",
   )
 
   tools = settings.tools

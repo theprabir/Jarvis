@@ -101,12 +101,22 @@ default_location = ""
 timeout_s = 10.0
 
 [memory]
-# Explicit memories: only what you ask JARVIS to remember is stored, never
-# the conversation itself. Tables live in the history database below.
+# Explicit memories plus a small set of high-confidence learned statements.
+# The conversation itself is never saved wholesale as permanent memory.
 enabled = true
 db = "data/jarvis.db"
-# Saved memories included in the system prompt (preferences first).
+# Saved memories included in the system prompt (ranked by relevance).
 inject_items = 6
+# Learn stable first-person facts (name, preferences, work, folders) from
+# ordinary sentences. Questions and commands are ignored.
+auto_learn = true
+learn_min_confidence = 0.75
+# Learned semantic memories expire; explicit memories do not.
+learned_ttl_days = 180
+# Episodic summaries of substantive exchanges and the session context size.
+episodic_ttl_days = 30
+episodic_items = 200
+short_term_items = 6
 
 [tools]
 # Computer interaction tools: files, applications, system info, clipboard,

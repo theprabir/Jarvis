@@ -140,8 +140,9 @@ allowed_commands = ["ipconfig", "whoami", "systeminfo", "tasklist", "hostname", 
 # Task tables share the conversation database.
 enabled = true
 db = "data/jarvis.db"
-# A plan may not exceed this many executable steps.
-max_steps = 50
+# A plan may not exceed this many executable steps. The default handles
+# folders of roughly 2,500 files; larger folders should be split.
+max_steps = 5000
 # Retries per step when the plan does not set its own value.
 max_retries = 1
 retry_delay_s = 0.2
@@ -149,6 +150,8 @@ retry_delay_s = 0.2
 parallel_workers = 2
 # Destructive plans wait for /confirm before the first step runs.
 approval_required = true
+# Continue approved background plans after JARVIS restarts.
+auto_resume = true
 # Rows shown by /tasks history.
 history_items = 20
 

@@ -349,6 +349,9 @@ class EngineTests(unittest.TestCase):
       time.sleep(0.02)
       result = engine.get(task.id)
     self.assertEqual(result.status, COMPLETED)
+    while not messages:
+      self.assertLess(time.monotonic(), deadline, "notification missing")
+      time.sleep(0.02)
     self.assertTrue(any("completed" in message for message in messages))
 
   def test_interrupted_task_recovers_as_paused(self):
@@ -370,6 +373,108 @@ class EngineTests(unittest.TestCase):
     self.assertEqual(recovered.status, PAUSED)
     self.assertEqual(recovered.steps[0].status, "pending")
     self.assertEqual(reopened.resume(task.id).status, COMPLETED)
+
+  def test_file_plan_runs_in_dependency_order(self):
+    seen = []
+
+    def create(path):
+      seen.append(("create", path))
+      return ToolResult(True, "created", {"path": path})
+
+    def write(path, content):
+      seen.append(("write", path, content))
+      return ToolResult(True, "written", {"path": path})
+
+    self.add_tool("create_folder", create, {"path": str})
+    self.add_tool("write_file", write, {"path": str, "content": str})
+    engine = self.make_engine()
+    task = engine.create_file_plan(
+        "create and write",
+        [
+            ("create_folder", {"path": "drafts"}, "create drafts"),
+            (
+                "write_file",
+                {"path": "drafts/notes.txt", "content": "hello"},
+                "write notes",
+            ),
+        ],
+    )
+    self.assertEqual(task.status, AWAITING_APPROVAL)
+    result = engine.approve(task.id)
+    self.assertEqual(result.status, COMPLETED)
+    self.assertEqual(
+        seen,
+        [("create", "drafts"), ("write", "drafts/notes.txt", "hello")],
+    )
+    self.assertGreaterEqual(len(result.steps), 2)
+
+  def test_background_task_auto_resumes_after_restart(self):
+    self.add_tool("ok", lambda: ToolResult(True, "ok", {"ok": True}))
+    engine = self.make_engine(auto_resume=True)
+    task = engine.create(
+        "auto resume",
+        [TaskStep("ok", "Ok", "ok")],
+        background=True,
+        approval_required=False,
+    )
+    task.status = "running"
+    task.steps[0].status = "running"
+    engine._store.save(task)
+    engine.close()
+
+    reopened = TaskEngine(self.config, self.registry)
+    self.addCleanup(reopened.close)
+    deadline = time.monotonic() + 3
+    result = reopened.get(task.id)
+    while result.status not in {COMPLETED, FAILED, CANCELLED}:
+      self.assertLess(time.monotonic(), deadline, "auto-resume hung")
+      time.sleep(0.02)
+      result = reopened.get(task.id)
+    self.assertEqual(result.status, COMPLETED)
+
+  def test_create_folder_and_move_are_idempotent(self):
+    work = Path(self.tmp.name) / "work"
+    work.mkdir()
+    (work / "existing").mkdir()
+    (work / "existing" / "moved.txt").write_text("x", encoding="utf-8")
+    base = load_settings()
+    tools = dataclasses.replace(base.tools, root=str(work))
+    registry = build_registry(dataclasses.replace(base, tools=tools))
+    engine = TaskEngine(
+        dataclasses.replace(self.config, db=str(self.state / "idempotent.db")),
+        registry,
+    )
+    self.addCleanup(engine.close)
+    task = engine.create(
+        "idempotent",
+        [
+            TaskStep(
+                "folder",
+                "Ensure folder",
+                "create_folder",
+                {"path": str(work / "existing")},
+            ),
+            TaskStep(
+                "move",
+                "Ensure moved",
+                "move_path",
+                {
+                    "source": str(work / "missing.txt"),
+                    "target": str(work / "existing" / "moved.txt"),
+                },
+                depends_on=("folder",),
+            ),
+        ],
+        approval_required=False,
+    )
+    result = engine.run(task.id)
+    self.assertEqual(result.status, COMPLETED)
+    self.assertEqual(result.step("folder").status, COMPLETED)
+    self.assertEqual(result.step("move").status, COMPLETED)
+    self.assertEqual(
+        len([e for e in engine.events(task.id) if e["kind"] == "recovered"]),
+        2,
+    )
 
   def test_dependency_cycle_is_rejected(self):
     engine = self.make_engine()
@@ -428,6 +533,22 @@ class OrganizeTests(unittest.TestCase):
     self.assertTrue((downloads / "Images" / "photo.jpg").is_file())
     self.assertFalse((downloads / "report.pdf").exists())
     self.assertFalse((downloads / "photo.jpg").exists())
+
+  def test_large_folder_is_inspected_beyond_the_display_limit(self):
+    downloads = self.work / "Downloads"
+    downloads.mkdir()
+    for index in range(25):
+      (downloads / f"note-{index:02d}.txt").write_text(
+          "note", encoding="utf-8"
+      )
+    engine = TaskEngine(self.tasks, self.registry)
+    self.addCleanup(engine.close)
+    task = engine.create_organize("Downloads")
+    self.assertEqual(task.context["files"], 25)
+    self.assertEqual(engine.approve(task.id).status, COMPLETED)
+    self.assertEqual(
+        len(list((downloads / "Documents").glob("*.txt"))), 25
+    )
 
   def test_empty_folder_is_a_single_step(self):
     downloads = self.work / "Downloads"
@@ -503,6 +624,38 @@ class AssistantTaskTests(unittest.TestCase):
     status = assistant.reply("/tasks")
     self.assertIn("cancelled", status.lower())
 
+  def test_durable_file_plan(self):
+    assistant, client = self.make_assistant()
+    prompt = assistant.reply(
+        "as a task, create a folder named drafts and in that folder"
+        " write hello to file notes.txt"
+    )
+    self.assertIn("Task #1", prompt)
+    self.assertIn("file steps", prompt)
+    done = assistant.reply("confirm")
+    self.assertIn("completed", done.lower())
+    self.assertTrue((self.work / "drafts" / "notes.txt").is_file())
+    self.assertEqual(client.calls, [])
+
+  def test_as_a_task_delegates_folder_organization(self):
+    assistant, client = self.make_assistant()
+    prompt = assistant.reply("as a task, organize my downloads folder")
+    self.assertIn("will organize 2 files", prompt)
+    self.assertIn("confirm", prompt.lower())
+    self.assertEqual(client.calls, [])
+
+  def test_tasks_plan_command(self):
+    assistant, client = self.make_assistant()
+    prompt = assistant.reply(
+        "/tasks plan create a folder named drafts and in that folder"
+        " write hello to file notes.txt"
+    )
+    self.assertIn("Task #1", prompt)
+    done = assistant.reply("yes")
+    self.assertIn("completed", done.lower())
+    self.assertTrue((self.work / "drafts" / "notes.txt").is_file())
+    self.assertEqual(client.calls, [])
+
   def test_tasks_can_be_disabled(self):
     assistant, client = self.make_assistant(tasks_enabled=False)
     self.assertIn("disabled", assistant.reply("organize my downloads folder"))
@@ -546,6 +699,11 @@ class TaskIntentTests(unittest.TestCase):
         "organize my downloads folder in the background"
     )
     self.assertTrue(background.entities["background"])
+    planned = self.router.route(
+        "as a task, create a folder named drafts and write hello"
+    )
+    self.assertEqual(planned.name, "task_plan")
+    self.assertIn("drafts", planned.entities["request"])
     absolute = self.router.route("organize C:/temp/inbox")
     self.assertEqual(absolute.entities["path"], "C:/temp/inbox")
 

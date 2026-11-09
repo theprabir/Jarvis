@@ -510,7 +510,7 @@ class TaskStore:
     return Task.from_dict(data)
 
 
-def plan_organize(registry, folder, max_steps=50):
+def plan_organize(registry, folder, max_steps=5000):
   """Inspect a folder and return a dependency-aware organization plan."""
   raw = " ".join(str(folder or "").split()).strip().strip('"').strip("'")
   if not raw:
@@ -613,7 +613,7 @@ def plan_organize(registry, folder, max_steps=50):
             key=f"verify_{_slug(category)}",
             name=f"Verify the {category} folder",
             tool="list_files",
-            arguments={"path": cat_path},
+            arguments={"path": cat_path, "limit": max_steps},
             depends_on=tuple(move_keys),
             retries=1,
             parallel=True,
@@ -645,6 +645,7 @@ class TaskEngine:
     self._threads = {}
     self._closed = False
     self._replanner: Callable | None = None
+    self._resume_background()
 
   def set_notifier(self, callback):
     self._notifier = callback
@@ -652,6 +653,20 @@ class TaskEngine:
   def set_replanner(self, callback):
     """Install an optional ``(task, step, error) -> arguments`` recovery hook."""
     self._replanner = callback
+
+  def _resume_background(self):
+    """Continue approved background plans after a restart."""
+    if not self._config.auto_resume:
+      return
+    for task in self._store.list(limit=100):
+      if task.status != PAUSED or not task.background:
+        continue
+      if task.approval_required and not task.approved:
+        continue
+      try:
+        self.start(task.id)
+      except TaskError as exc:
+        log.warning("Could not auto-resume task %s: %s", task.id, exc)
 
   def create(
       self,
@@ -673,6 +688,33 @@ class TaskEngine:
         context=context,
         background=background,
         approval_required=approval_required,
+    )
+
+  def create_file_plan(self, goal, actions, background=False):
+    """Turn explicit file actions into a durable, sequential task."""
+    steps = []
+    previous = None
+    for index, (name, arguments, clause) in enumerate(actions, 1):
+      if self._registry.get(name) is None:
+        raise TaskError(f"there is no tool named {name}")
+      key = f"file_{index:02d}"
+      steps.append(
+          TaskStep(
+              key=key,
+              name=(clause or name).strip(),
+              tool=name,
+              arguments=dict(arguments),
+              depends_on=(previous,) if previous else (),
+              retries=1,
+          )
+      )
+      previous = key
+    return self.create(
+        goal,
+        steps,
+        kind="file_plan",
+        context={"actions": len(steps)},
+        background=background,
     )
 
   def create_organize(self, folder, background=False):
@@ -931,6 +973,22 @@ class TaskEngine:
           task.id, "done", f"Completed {step.key}: {outcome['text']}"
       )
       return task
+    recovered = self._recover_failure(step)
+    if recovered:
+      self._complete_step(
+          step,
+          {
+              "text": recovered,
+              "result": {},
+              "attempts": outcome.get("attempts", 0),
+          },
+      )
+      task.current_step = ""
+      self._store.save(task)
+      self._store.add_event(
+          task.id, "recovered", f"Recovered {step.key}: {recovered}"
+      )
+      return task
     if self._replan_step(task, step, outcome["error"]):
       self._store.save(task)
       return task
@@ -974,10 +1032,25 @@ class TaskEngine:
     for step in ready:
       outcome = outcomes[step.key]
       task.current_step = ""
+      recovered = self._recover_failure(step)
       if outcome["ok"]:
         self._complete_step(step, outcome)
         self._store.add_event(
             task.id, "done", f"Completed {step.key}: {outcome['text']}"
+        )
+      elif recovered:
+        self._complete_step(
+            step,
+            {
+                "text": recovered,
+                "result": {},
+                "attempts": outcome.get("attempts", 0),
+            },
+        )
+        self._store.add_event(
+            task.id,
+            "recovered",
+            f"Recovered {step.key}: {recovered}",
         )
       elif self._replan_step(task, step, outcome["error"]):
         pass
@@ -1120,6 +1193,28 @@ class TaskEngine:
     except TypeError:
       return False
     return False
+
+  @staticmethod
+  def _recover_failure(step):
+    """Recognize an effect that was already achieved by an earlier attempt."""
+    try:
+      if step.tool == "create_folder":
+        path = Path(str(step.arguments.get("path") or ""))
+        if path.is_absolute() and path.is_dir():
+          return "Folder already existed."
+      if step.tool == "move_path":
+        source = Path(str(step.arguments.get("source") or ""))
+        target = Path(str(step.arguments.get("target") or ""))
+        if (
+            source.is_absolute()
+            and target.is_absolute()
+            and not source.exists()
+            and target.exists()
+        ):
+          return "File was already moved."
+    except OSError:
+      return ""
+    return ""
 
   def _complete_step(self, step, outcome):
     step.status = COMPLETED

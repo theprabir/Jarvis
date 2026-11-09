@@ -24,7 +24,12 @@ from core.conversation import (
     needs_clarification,
 )
 from core.history import HistoryError, HistoryStore
-from core.intents import TOOL_INTENTS, IntentRouter, plan_file_actions
+from core.intents import (
+    TOOL_INTENTS,
+    IntentRouter,
+    plan_file_actions,
+    recognize_tasks,
+)
 from core.learning import (
     ShortTermMemory,
     episode_summary,
@@ -721,12 +726,13 @@ class Assistant:
 
   # -- durable tasks ----------------------------------------------------
 
-  def _task_organize(self, intent):
+  def _task_organize(self, intent, background=None):
     tasks = self._get_tasks()
     if tasks is None:
       return "Task planning is disabled, sir."
     path = intent.entities.get("path") or "Downloads"
-    background = bool(intent.entities.get("background"))
+    if background is None:
+      background = bool(intent.entities.get("background"))
     try:
       task = tasks.create_organize(path, background=background)
     except TaskError as exc:
@@ -744,6 +750,43 @@ class Assistant:
     return (
         f"Task #{task.id} will organize {files} files into"
         f" {len(categories)} folders under {label}{mode}."
+        " Run /confirm to approve."
+    )
+
+  def _task_plan(self, request, background=False):
+    tasks = self._get_tasks()
+    if tasks is None:
+      return "Task planning is disabled, sir."
+    request = " ".join(str(request or "").split())
+    if not request:
+      return "What file steps should I plan, sir?"
+    nested = recognize_tasks(request)
+    if nested is not None and nested.name == "task_organize":
+      nested_background = background or bool(
+          nested.entities.get("background")
+      )
+      return self._task_organize(nested, nested_background)
+    plan = plan_file_actions(
+        request, self.router.allowed_apps, self.router.allowed_commands
+    )
+    if plan is None:
+      return (
+          "I can turn explicit multi-step file actions into a task, sir."
+          " Try 'as a task, create a folder named drafts and in that folder"
+          " write hello to file notes.txt'."
+      )
+    try:
+      task = tasks.create_file_plan(
+          request, plan, background=background
+      )
+    except TaskError as exc:
+      return f"I couldn't plan that task, sir: {exc}."
+    self._pending_task = task.id
+    self._pending_tool = None
+    self._pending_plan = None
+    mode = " in the background" if task.background else ""
+    return (
+        f"Task #{task.id} will run {len(plan)} file steps{mode}."
         " Run /confirm to approve."
     )
 
@@ -776,12 +819,17 @@ class Assistant:
     if task is None:
       return "There is no task with that id, sir."
     if task.status == "completed":
-      files = int(task.context.get("files") or 0)
-      categories = len(task.context.get("categories") or {})
       checks = task.verified_count()
+      if task.kind == "organize":
+        files = int(task.context.get("files") or 0)
+        categories = len(task.context.get("categories") or {})
+        return (
+            f"Task #{task.id} completed: {files} files into"
+            f" {categories} folders, {checks} checks passed."
+        )
       return (
-          f"Task #{task.id} completed: {files} files into"
-          f" {categories} folders, {checks} checks passed."
+          f"Task #{task.id} completed:"
+          f" {task.done_count()} file steps, {checks} checks passed."
       )
     if task.status == "failed":
       return (
@@ -857,6 +905,18 @@ class Assistant:
     rest = parts[1:]
     if action in {"list", "ls"}:
       return self._task_list_text(tasks)
+    if action == "plan":
+      request = " ".join(rest)
+      if not request:
+        return "Usage: /tasks plan TEXT"
+      background = " in the background" in f" {request.lower()}"
+      request = re.sub(
+          r"\s+in\s+(?:the\s+)?background\b",
+          "",
+          request,
+          flags=re.I,
+      ).strip()
+      return self._task_plan(request, background)
     if action in {"history", "log"}:
       return self._task_history_text(tasks)
     if action in {"show", "status", "details"}:
@@ -937,6 +997,11 @@ class Assistant:
       return self._answer_weather(intent)
     if intent.name == "task_organize":
       return self._task_organize(intent)
+    if intent.name == "task_plan":
+      return self._task_plan(
+          intent.entities.get("request", ""),
+          bool(intent.entities.get("background")),
+      )
     if intent.name in {
         "task_list",
         "task_show",

@@ -96,6 +96,7 @@ CONVERSATION_INTENTS = frozenset(
         "timer_list",
         "timer_cancel",
         "task_organize",
+        "task_plan",
         "task_list",
         "task_show",
         "task_approve",
@@ -724,6 +725,10 @@ _TASK_ORGANIZE = re.compile(
 _TASK_BACKGROUND = re.compile(
     r"\s+in\s+(?:the\s+)?background\b", re.I
 )
+_TASK_PLAN = re.compile(
+    r"^(?:as a task|plan a task(?: to)?|task:)\s*,?\s*(?P<request>.+)$",
+    re.I,
+)
 _TASK_LIST = (
     re.compile(r"^(?:list|show)\s+(?:my\s+)?tasks$"),
     re.compile(
@@ -783,6 +788,17 @@ def recognize_tasks(text):
         0.9,
         {"path": phrase, "background": background},
     )
+  match = _TASK_PLAN.match(source)
+  if match:
+    request = match.group("request").strip()
+    background = bool(_TASK_BACKGROUND.search(request))
+    request = _TASK_BACKGROUND.sub("", request).strip()
+    if request:
+      return Intent(
+          "task_plan",
+          0.9,
+          {"request": request, "background": background},
+      )
   for pattern in _TASK_LIST:
     if pattern.match(lowered):
       return Intent("task_list", 0.9)

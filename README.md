@@ -7,7 +7,7 @@ deterministic Python modules do the audio, routing and tool work.
 
 **Current status:** Phase 1 (stabilization) and feature sets **4.1 Voice
 Interface** through **4.9 Task Planning and Execution** complete, released as
-**v0.2.1** in the moderate-advanced feature line. JARVIS listens through the
+**v0.2.2** in the moderate-advanced feature line. JARVIS listens through the
 microphone with push-to-talk, transcribes offline with Vosk, keeps multi-turn
 context across restarts, remembers explicitly saved preferences, facts, paths
 and folders, learns high-confidence first-person facts with provenance and
@@ -199,11 +199,12 @@ blocking the conversation.
 | Resumption | Interrupted or failed tasks resume from completed steps with `/tasks resume ID` |
 | Verification | A verify step lists the destination and requires every expected file name to be present |
 | History | Every plan, approval, attempt, retry, completion and failure is recorded in `task_events` |
-| Background | Approved background tasks run in a daemon thread and notify when they finish |
+| Background | Approved background tasks run in a daemon thread and notify when they finish; approved background plans resume after a restart |
 
 | Control | How |
 | --- | --- |
 | Plan | `organize my downloads folder`, `organize my downloads folder in the background`, `organize C:/temp/inbox` |
+| Durable file plan | `as a task, create a folder named drafts and in that folder write hello to file notes.txt`, `/tasks plan ...` |
 | List | `/tasks`, `list tasks`, `what tasks are running`, `task status` |
 | Detail | `/tasks show ID`, `show task ID` |
 | Approve | `/confirm`, `/tasks approve ID`, `approve task ID` |
@@ -222,13 +223,19 @@ memory tables.
 [tasks]
 enabled = true
 db = "data/jarvis.db"
-max_steps = 50
+max_steps = 5000
 max_retries = 1
 retry_delay_s = 0.2
 parallel_workers = 2
 approval_required = true
+auto_resume = true
 history_items = 20
 ```
+
+`max_steps` also sets the folder-inspection and verification limit, so a
+single organization run can handle thousands of files. `auto_resume` restarts
+approved background tasks that were still running when JARVIS stopped;
+unapproved tasks stay paused until `/confirm`.
 
 ### Memory
 
@@ -506,14 +513,17 @@ logs/                   Runtime logs (git-ignored)
   read, list, search, rename, copy, move, delete). A request that needs
   follow-up reasoning, such as "write the file location in it", is not
   planned: the sequence stops at that clause and the confirmation shows what
-  will run.
-- The conversational task planner currently covers folder organization. Other
-  multi-step requests still use the explicit file-action planner or the model.
-  Organization is capped at `[tasks] max_steps` (50) and inspects at most that
-  many items, so a very large folder must be split into smaller runs.
-- Task steps stay inside `[tools] root`. Dynamic replanning automatically
-  handles move-name collisions; other step failures stop the task and require
-  `/tasks resume ID` after the cause is fixed.
+  will run. Organization and `as a task` / `/tasks plan` requests become
+  durable tasks; open-ended reasoning still goes to the model.
+- Organization is capped at `[tasks] max_steps` (5000 by default) and
+  inspects and verifies at most that many items. A single run therefore covers
+  thousands of files, but a folder above the cap still has to be split.
+- Task steps stay inside `[tools] root`. Dynamic replanning handles move-name
+  collisions, and recovery treats an existing destination folder or an
+  already-completed move as success. Other step failures stop the task and
+  require `/tasks resume ID` after the cause is fixed.
+- An approved background task resumes after a restart when `auto_resume` is
+  true; a task waiting for approval stays paused until it is confirmed.
 - Web search still reads at most three sources and 1000 characters of
   evidence (2000 on the retry), so a fact split across several pages can be
   missed. Pages behind a login or a CAPTCHA cannot be read at all: such a

@@ -144,11 +144,12 @@ class TasksConfig:
   enabled: bool = True
   # Plans share the conversation database; task tables are separate.
   db: str = "data/jarvis.db"
-  max_steps: int = 50
+  max_steps: int = 5000
   max_retries: int = 1
   retry_delay_s: float = 0.2
   parallel_workers: int = 2
   approval_required: bool = True
+  auto_resume: bool = True
   history_items: int = 20
 
   @property
@@ -336,7 +337,10 @@ def _validate(settings):
 
   tasks = settings.tasks
   _require(bool(tasks.db), "[tasks] db must not be empty")
-  _require(3 <= tasks.max_steps <= 200, "[tasks] max_steps must be 3-200")
+  _require(
+      3 <= tasks.max_steps <= 10_000,
+      "[tasks] max_steps must be 3-10000",
+  )
   _require(0 <= tasks.max_retries <= 3, "[tasks] max_retries must be 0-3")
   _require(
       0.0 <= tasks.retry_delay_s <= 5.0,
@@ -349,6 +353,10 @@ def _validate(settings):
   _require(
       1 <= tasks.history_items <= 100,
       "[tasks] history_items must be 1-100",
+  )
+  _require(
+      isinstance(tasks.auto_resume, bool),
+      "[tasks] auto_resume must be true or false",
   )
 
   memory = settings.memory

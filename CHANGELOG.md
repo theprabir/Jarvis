@@ -7,6 +7,50 @@ all feature sets in a phase increments the middle number and resets the patch.
 feature sets in this level increment the patch (v0.2.1, …), and completing the
 level increments the middle number.
 
+## v0.2.2 — 2026-11-09
+
+**Task planning reliability fixes (feature set 4.9)**
+
+### Implemented functionality
+
+- **Durable file-action plans** — `TaskEngine.create_file_plan` turns the
+  existing explicit file-action planner into a persisted sequential task with
+  dependencies and approval. `as a task, ...` and `/tasks plan ...` reuse the
+  planner, so a multi-file request survives a restart and reports progress
+  instead of running as one opaque assistant turn.
+- **Large folders** — `[tasks] max_steps` now defaults to 5000 (validated
+  3–10000), and organization passes that limit to both folder inspection and
+  verification. A run is no longer capped at the previous 20-item display
+  limit or the 50-step default.
+- **Idempotent recovery** — a failed `create_folder` whose folder already
+  exists, or a failed `move_path` whose source is gone and destination is
+  present, is recorded as recovered instead of failing the task. This makes a
+  resumed plan safe after a partial attempt.
+- **Background auto-resume** — approved background tasks that were running at
+  shutdown are restarted when the task engine opens. `[tasks] auto_resume`
+  (default `true`) controls it; tasks awaiting approval remain paused.
+- **Generic task reports** — completed non-organization tasks report their
+  file-step count and verification count.
+
+### Files
+
+- `core/tasks.py` — file-plan factory, recovery, auto-resume, full-limit
+  verification.
+- `core/assistant.py` — `as a task` / `/tasks plan` handling and generic
+  completion reports.
+- `core/intents.py` — `task_plan` intent.
+- `core/config.py`, `config/settings.toml` — `max_steps = 5000`,
+  `auto_resume = true`.
+- `tests/test_tasks.py` — seven tests for durable plans, a 25-file
+  organization run, idempotent recovery and restart auto-resume; the
+  background notification test now waits for the notification itself.
+- `README.md` — task controls, configuration and limitations.
+
+### Testing
+
+- `python -m compileall -q core tools config tests main.py` passed.
+- `python -m unittest discover -s tests` passed: **348 tests**.
+
 ## v0.2.1 — 2026-11-09
 
 **Task planning and execution (feature set 4.9)**

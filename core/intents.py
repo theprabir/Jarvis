@@ -16,6 +16,8 @@ from dataclasses import dataclass, field
 from core.calculator import CalculationError, evaluate
 from core.dates import find_date_reference
 
+from core.memory import classify as classify_memory
+
 CONFIDENCE_THRESHOLD = 0.7
 
 TOOL_INTENTS = frozenset(
@@ -70,6 +72,10 @@ CONVERSATION_INTENTS = frozenset(
         "new",
         "mode",
         "web_search",
+        "remember_memory",
+        "search_memory",
+        "list_memory",
+        "delete_memory",
         "history",
         "forget",
         "intent",
@@ -409,6 +415,83 @@ def recognize_web(text):
     if len(query) < 2:
       return None
     return Intent("web_search", 0.88, {"query": query + suffix})
+  return None
+
+
+_MEMORY_REMEMBER = (
+    re.compile(
+        r"^(?:please\s+)?remember\s+(?:(?P<temporary>for\s+now)\s+)?"
+        r"(?:that\s+)?(?P<content>.+)$"
+    ),
+    re.compile(
+        r"^(?:please\s+)?don'?t\s+forget\s+(?:that\s+)?(?P<content>.+)$"
+    ),
+    re.compile(r"^(?P<content>.+?)[,;]?\s+remember\s+(?:that|this)$"),
+)
+_MEMORY_LIST = re.compile(
+    r"^(?:show|list)\s+(?:me\s+)?(?:your\s+)?(?:memories|memory)$"
+)
+_MEMORY_RECALL = re.compile(
+    r"^(?:what|who|where|when)\s+do\s+you\s+remember"
+    r"(?:\s+about\s+(?P<query>.+))?$"
+)
+_MEMORY_SEARCH = re.compile(
+    r"^(?:do\s+you\s+remember\s+(?P<query>.+?)"
+    r"|search\s+(?:your\s+)?memory\s+for\s+(?P<term>.+?)"
+    r"|look\s+(?:in|through)\s+(?:your\s+)?memory\s+for\s+(?P<item>.+?))$"
+)
+_MEMORY_DELETE = re.compile(
+    r"^(?:forget|delete)\s+(?:the\s+)?memor(?:y|ies)"
+    r"(?:\s+(?:about|of|for))?\s+(?P<query>.+)$"
+)
+
+
+def recognize_memory(text):
+  """Recognize a request to save, search, list or delete memories."""
+  source = (text or "").strip().rstrip("?.!")
+  lowered = source.lower()
+  if not lowered:
+    return None
+  for pattern in _MEMORY_REMEMBER:
+    match = pattern.match(lowered)
+    if not match:
+      continue
+    start, end = match.span("content")
+    content = _clean(source[start:end])
+    if len(content) < 2:
+      return None
+    return Intent(
+        "remember_memory",
+        0.9,
+        {
+            "content": content,
+            "category": classify_memory(content),
+            "temporary": bool(match.groupdict().get("temporary")),
+        },
+    )
+  if _MEMORY_LIST.match(lowered):
+    return Intent("list_memory", 0.9, {})
+  match = _MEMORY_RECALL.match(lowered)
+  if match:
+    query = _clean(match.group("query") or "")
+    if query:
+      return Intent("search_memory", 0.9, {"query": query})
+    return Intent("list_memory", 0.9, {})
+  match = _MEMORY_SEARCH.match(lowered)
+  if match:
+    query = _clean(
+        match.group("query")
+        or match.group("term")
+        or match.group("item")
+        or ""
+    )
+    if query:
+      return Intent("search_memory", 0.9, {"query": query})
+  match = _MEMORY_DELETE.match(lowered)
+  if match:
+    query = _clean(match.group("query"))
+    if len(query) >= 2:
+      return Intent("delete_memory", 0.9, {"query": query})
   return None
 
 
@@ -816,6 +899,9 @@ class IntentRouter:
     if intent is not None:
       return intent
     intent = recognize_web(text)
+    if intent is not None:
+      return intent
+    intent = recognize_memory(text)
     if intent is not None:
       return intent
     for recognizer in (recognize_time, recognize_date, recognize_math):

@@ -4,6 +4,87 @@ All notable changes to JARVIS are recorded here. Versions follow the project
 convention: each completed feature set increments the patch number; completing
 all feature sets in a phase increments the middle number and resets the patch.
 
+## v0.1.10 — 2026-11-09
+
+**Basic memory (feature set 4.6)**
+
+### Implemented functionality
+
+- **Explicit memories only** — `remember my name is Alex`, `remember the
+  office is in Kolkata`, `remember this folder is C:/dev` and the trailing
+  form `my name is Alex, remember that` save a memory. Nothing is promoted
+  from the conversation automatically; that stays reserved for feature set
+  4.8. Duplicate persistent memories refresh their timestamp instead of
+  appearing twice.
+- **Categories** — `preference`, `fact`, `path`, `folder`, `website`, `task`
+  and `general`, inferred from the wording (`my … is …` becomes a preference,
+  URLs a website, drive paths a path/folder) or set explicitly with
+  `/memory add category text`.
+- **Temporary and persistent memory** — `remember for now that …` writes a
+  row with `persistent = 0`; temporary rows are deleted the next time JARVIS
+  starts, so nothing accumulates on disk.
+- **Inspection, search, editing and deletion** — `what do you remember`,
+  `show your memories`, `what do you remember about Alex`, `forget memory
+  about Kolkata`, and `/memory list|search|add|temporary|edit|delete|
+  frequent|clear`. Bulk deletion needs `/memory clear` followed by
+  `/memory clear confirm`; `/memory clear temporary` targets session rows.
+- **Prompt use** — persistent memories are appended to the system prompt,
+  preferences first then the newest facts, bounded by `inject_items` (6) and
+  never blocking a reply. The conversation itself is not used as memory.
+- **Frequent usage** — application launches, opened folders/paths and URLs
+  that pass through the tools are counted in `memory_usage`; `/memory
+  frequent [app|folder|website]` lists them by use count.
+- **SQLite storage** — `core/memory.py` adds the `memories` and
+  `memory_usage` tables to `data/jarvis.db`, with FTS5 search when the bundled
+  SQLite supports it and a scored scan otherwise. Expired rows are filtered
+  and purged on open.
+- **Configuration** — `[memory] enabled`, `db` and `inject_items`, validated
+  on load.
+
+### Files created or modified
+
+New `core/memory.py` and `tests/test_memory.py`. Modified `core/config.py`
+(`MemoryConfig`, `Settings.memory`, validation, loading),
+`core/intents.py` (memory recognizer and routing), `core/assistant.py`
+(store lifecycle, prompt block, intent handling, `/memory`, usage counting),
+`config/settings.toml`, `README.md`, `CHANGELOG.md`.
+
+### Bug fixes found while verifying
+
+- The memory recognizer matched on lowercased text and saved that form, so
+  `remember my name is Alex` stored `my name is alex`. Content is now sliced
+  from the original text with its casing and punctuation preserved, while
+  matching stays case-insensitive.
+- `[memory]` had to be added to settings loading, otherwise an existing
+  `settings.toml` without the section would fail to load; the section defaults
+  are now applied and validated.
+
+### Testing
+
+- 255 unit tests pass (26 new: store CRUD, dedupe, categories, FTS/scan
+  search, expiry, temporary purge, prompt ordering and bounds, usage ranking,
+  clear targets, classification, config validation, five intent shapes,
+  commands, confirmation, prompt injection and the disabled path).
+  `compileall` clean.
+- Persistence verified across processes: an assistant saved memories, closed,
+  and a new assistant on the same database recalled them
+  (`recalled = True`); the temporary memory was gone
+  (`temporary_gone = True`).
+- Measured on this machine: store open adds 0.9 MB RSS,
+  100 saved memories take 20.66 ms each, and a search averages
+  0.38 ms; all 100 memories survived reopening
+  (100 rows).
+
+### Known limitations
+
+- Explicit memories only: no automatic candidate extraction, importance
+  scoring, expiration policy or conflict detection (feature set 4.8).
+- Search matches words, not meaning; there are no embeddings.
+- Duplicate detection compares exact text, so paraphrases are stored twice.
+- A single user profile is assumed; there is no per-project separation.
+- Usage counts cover tool-driven app/folder/URL activity only, not actions
+  taken in a browser by hand.
+
 ## v0.1.9 — 2026-11-09
 
 **Search fixes — every v0.1.8 limitation addressed**

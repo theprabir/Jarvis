@@ -91,6 +91,14 @@ resume_last_session = true
 # SQLite file for persisted exchanges (git-ignored).
 history_db = "data/jarvis.db"
 
+[memory]
+# Explicit memories: only what you ask JARVIS to remember is stored, never
+# the conversation itself. Tables live in the history database below.
+enabled = true
+db = "data/jarvis.db"
+# Saved memories included in the system prompt (preferences first).
+inject_items = 6
+
 [tools]
 # Computer interaction tools: files, applications, system info, clipboard,
 # windows, screenshots and notifications.

@@ -109,6 +109,20 @@ class ConversationConfig:
 
 
 @dataclass(frozen=True)
+class MemoryConfig:
+  enabled: bool = True
+  # Explicit memories share the conversation database; tables are separate.
+  db: str = "data/jarvis.db"
+  # Persistent memories included in the system prompt, newest first.
+  inject_items: int = 6
+
+  @property
+  def resolved_db(self) -> Path:
+    path = Path(self.db)
+    return path if path.is_absolute() else (PROJECT_ROOT / path).resolve()
+
+
+@dataclass(frozen=True)
 class ToolsConfig:
   enabled: bool = True
   root: str = "."
@@ -174,6 +188,7 @@ class Settings:
   voice: VoiceConfig
   conversation: ConversationConfig
   tools: ToolsConfig
+  memory: MemoryConfig
   web: WebConfig
 
 
@@ -272,6 +287,13 @@ def _validate(settings):
       "[conversation] history_db must not be empty",
   )
 
+  memory = settings.memory
+  _require(bool(memory.db), "[memory] db must not be empty")
+  _require(
+      1 <= memory.inject_items <= 20,
+      "[memory] inject_items must be 1-20",
+  )
+
   tools = settings.tools
   _require(bool(tools.root), "[tools] root must not be empty")
   _require(
@@ -359,6 +381,7 @@ def load_settings(path=None):
           ConversationConfig, raw.get("conversation", {}), "conversation"
       ),
       tools=_build(ToolsConfig, raw.get("tools", {}), "tools"),
+      memory=_build(MemoryConfig, raw.get("memory", {}), "memory"),
       web=_build(WebConfig, raw.get("web", {}), "web"),
   )
   _validate(settings)

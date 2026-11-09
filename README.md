@@ -7,14 +7,15 @@ deterministic Python modules do the audio, routing and tool work.
 
 **Current status:** Phase 1 (stabilization) and feature sets **4.1 Voice
 Interface**, **4.2 Conversation Intelligence**, **4.3 Basic Intelligence**,
-**4.4 Computer Interaction** and **4.5 Internet Search** complete. JARVIS
-listens through the microphone with push-to-talk, transcribes offline with
-Vosk, keeps multi-turn context across restarts, answers simple questions
-deterministically through Python, operates the computer through validated
-tools, searches the web and answers only from the fetched evidence with
-sources, falls back to the local model for everything else, and speaks
-through an interruptible Windows SAPI voice. Basic memory follows in feature
-set 4.6 (see `PLANS-STACK-FEATURES.md`, `CHANGELOG.md`).
+**4.4 Computer Interaction**, **4.5 Internet Search** and **4.6 Basic
+Memory** complete. JARVIS listens through the microphone with push-to-talk,
+transcribes offline with Vosk, keeps multi-turn context across restarts,
+remembers explicitly saved preferences, facts, paths and folders, answers
+simple questions deterministically through Python, operates the computer
+through validated tools, searches the web and answers only from the fetched
+evidence with sources, falls back to the local model for everything else, and
+speaks through an interruptible Windows SAPI voice. Utilities follow in
+feature set 4.7 (see `PLANS-STACK-FEATURES.md`, `CHANGELOG.md`).
 
 ## Requirements
 
@@ -59,6 +60,7 @@ All runtime settings live in `config/settings.toml`:
 | `[conversation]` | Multi-turn context, answer mode, token limits, summarization, history database |
 | `[tools]` | File sandbox root, read/search limits, allowed applications and commands |
 | `[web]` | Search provider, result and query limits, page extraction, evidence budget, cache |
+| `[memory]` | Enable explicit memory, its SQLite file and how many memories reach the prompt |
 
 Unknown keys are rejected so typos fail fast. Override the file location with
 `--config PATH` or the `JARVIS_CONFIG` environment variable.
@@ -169,6 +171,38 @@ system, shell or JARVIS processes.
 Destructive file actions cannot escape `[tools] root`, and applications and
 commands must be listed in `config/settings.toml`.
 
+### Memory
+
+Memory is explicit: JARVIS stores only what you ask it to remember. Nothing is
+promoted from the conversation automatically (that arrives with feature set
+4.8), and no conversation text is saved as a long-term fact. Memories live in
+`data/jarvis.db` next to the conversation history, with SQLite FTS5 search
+when the bundled SQLite provides it and a scored scan otherwise.
+
+| Action | How |
+| --- | --- |
+| Save | `remember my name is Alex`, `remember the office is in Kolkata`, `remember this folder is C:/dev` |
+| Temporary | `remember for now that the meeting is at five` (deleted when JARVIS restarts) |
+| Inspect | `what do you remember`, `show your memories`, `/memory` |
+| Search | `what do you remember about Alex`, `search your memory for Kolkata`, `/memory search TEXT` |
+| Edit | `/memory edit ID new text` |
+| Delete | `forget memory about Kolkata`, `/memory delete ID` |
+| Bulk delete | `/memory clear` then `/memory clear confirm`; `/memory clear temporary` |
+| Frequent | `/memory frequent [app\|folder\|website]`, fed by app launches, opened folders and URLs |
+
+Categories are inferred (`preference`, `fact`, `path`, `folder`, `website`,
+`task`, `general`) and can be set explicitly with `/memory add category text`.
+Preferences and the newest facts are added to the system prompt, bounded by
+`inject_items` (6). Duplicate persistent memories are refreshed instead of
+duplicated.
+
+```toml
+[memory]
+enabled = true
+db = "data/jarvis.db"
+inject_items = 6
+```
+
 ### Internet search
 
 Questions that need current information are routed to the search subsystem in
@@ -270,8 +304,8 @@ conversation context, context trimming, summarization, answer modes, commands,
 clarification, SQLite history/resume/deletion, intent routing, arithmetic and
 date parsing, JSON validation, tool argument validation, sandboxed file
 operations, app/command allowlists, confirmation flows, multi-step file plans,
-web search ranking, caching and grounded answers, Escape interruption, VAD
-segmentation,
+web search ranking, caching and grounded answers, explicit memory storage,
+search and prompt injection, Escape interruption, VAD segmentation,
 resampling, device resolution, speech text cleanup and SAPI rate mapping. The
 Vosk transcription test is skipped when the model is absent and desktop tools
 are only validated, never exercised, by the suite.
@@ -303,6 +337,7 @@ web/duckduckgo.py       DuckDuckGo provider (ddgs client plus HTML fallback)
 web/brave.py            Brave Search API provider
 web/extract.py          Page fetching (primp/httpx) and main-content extraction
 web/cache.py            Bounded SQLite search cache with stale fallback
+core/memory.py          Explicit memories, FTS5 search, temporary scope, usage
 screenshots/            Screen captures (git-ignored)
 core/benchmark.py       RAM and latency baseline
 brain/llm_client.py     Persistent HTTPX client
@@ -346,6 +381,12 @@ logs/                   Runtime logs (git-ignored)
   scraping can break without notice - set `searx_url` for a self-hosted
   SearXNG, or `BRAVE_API_KEY` for a supported API. The Wikipedia lookup sends
   a descriptive User-Agent because Wikimedia blocks anonymous ones.
+- Memory stores explicit entries only and does not learn from conversations
+  until feature set 4.8. Search matches words rather than meaning (no
+  embeddings), duplicate detection is exact text, and there is a single user
+  profile with no per-project separation.
+- Frequent-usage counts cover apps, folders and URLs that went through the
+  tools; a website opened in a browser by hand is not counted.
 - Summarization costs one extra model call once the transcript grows past
   `summarize_after`, which adds a few seconds on this CPU.
 - Speech recognition is English-only and limited by the small Vosk model:

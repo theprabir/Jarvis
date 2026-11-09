@@ -25,6 +25,13 @@ from core.conversation import (
 )
 from core.history import HistoryError, HistoryStore
 from core.intents import TOOL_INTENTS, IntentRouter, plan_file_actions
+from core.memory import (
+    CATEGORIES,
+    USAGE_KINDS,
+    MemoryStore,
+    MemoryStoreError,
+    classify as classify_memory,
+)
 from tools import build_registry
 from tools.base import shorten
 from web.base import STOPWORDS, SearchError, words
@@ -113,6 +120,7 @@ def _supported(answer, evidence):
   return sum(1 for term in terms if term in available) >= 2
 
 WEB_DISABLED = "Web search is disabled, sir."
+MEMORY_DISABLED = "Memory is disabled, sir."
 WEB_EMPTY = "I couldn't find anything reliable about that on the web, sir."
 WEB_UNGROUNDED = (
     "I found sources but none of them actually answered that, sir."
@@ -129,13 +137,12 @@ FAILURE_REPLIES = {
     "other": "My language model returned an error, sir.",
 }
 
-HELP_TEXT = (
-    "Commands: /new starts a fresh conversation, /mode short|detailed|technical"
+HELP_TEXT = (    " Commands: /new starts a fresh conversation, /mode short|detailed|technical"
     " changes how much I say, /web TEXT answers from web sources, /history"
-    " shows recent exchanges, /intent TEXT shows the detected intent as JSON,"
-    " /tools lists computer tools, /confirm and /cancel handle pending"
-    " actions, /forget deletes saved history after confirmation, /help lists"
-    " this."
+    " shows recent exchanges, /memory manages saved memories, /intent TEXT"
+    " shows the detected intent as JSON, /tools lists computer tools, /confirm"
+    " and /cancel handle pending actions, /forget deletes saved history after"
+    " confirmation, /help lists this."
 )
 
 def _normalize_sentence(text):
@@ -214,6 +221,7 @@ class Assistant:
     self.conversation = Conversation(self._config)
     self._session_id = uuid.uuid4().hex
     self._forget_pending = False
+    self._memory_clear_pending = False
     self._pending_tool = None
     self._pending_plan = None
     self._searcher = None
@@ -230,6 +238,12 @@ class Assistant:
         self._store = HistoryStore(self._config.resolved_history_db)
       except HistoryError as exc:
         log.warning("Conversation history disabled: %s", exc)
+    self._memory = None
+    if settings.memory.enabled:
+      try:
+        self._memory = MemoryStore(settings.memory.resolved_db)
+      except MemoryStoreError as exc:
+        log.warning("Memory disabled: %s", exc)
     if self._store is not None and self._config.resume_last_session:
       self._resume_last_session()
 
@@ -299,6 +313,9 @@ class Assistant:
       conversation.maybe_summarize(self._summarize)
 
     messages = conversation.messages(SYSTEM_PROMPT)
+    memory_block = self._memory_context()
+    if memory_block:
+      messages[0]["content"] += "\n\n" + memory_block
     messages.append({"role": "user", "content": text})
     answer, ok = self._complete(messages, conversation.max_tokens())
 
@@ -314,6 +331,9 @@ class Assistant:
     if self._store is not None:
       self._store.close()
       self._store = None
+    if self._memory is not None:
+      self._memory.close()
+      self._memory = None
 
   # -- web search -------------------------------------------------------
 
@@ -432,6 +452,7 @@ class Assistant:
     result = registry.execute(intent.name, arguments)
     if result.ok:
       log.info("Tool %s completed", intent.name)
+      self._note_usage(intent.name, arguments)
       self._remember(text, result.text)
     else:
       log.info("Tool %s rejected the request: %s", intent.name, result.error)
@@ -459,6 +480,7 @@ class Assistant:
     result = self.registry.execute(name, arguments)
     if result.ok:
       log.info("Confirmed tool %s completed", name)
+      self._note_usage(name, arguments)
       self._remember(user_text, result.text)
     else:
       log.info("Confirmed tool %s failed: %s", name, result.error)
@@ -505,6 +527,7 @@ class Assistant:
         results.append(f"Step {index} failed: {result.text}")
         break
       log.info("Plan step %s/%s (%s) completed", index, len(plan), name)
+      self._note_usage(name, arguments)
       results.append(result.text)
     answer = " ".join(results)
     self._remember(user_text, answer)
@@ -526,6 +549,14 @@ class Assistant:
         reason = intent.entities.get("error", "unsupported expression")
         return f"I can't calculate that, sir: {reason}."
       return f"That is {format_number(intent.entities['result'])}."
+    if intent.name == "remember_memory":
+      return self._remember_memory(intent)
+    if intent.name in {
+        "search_memory",
+        "list_memory",
+        "delete_memory",
+    }:
+      return self._memory_reply(intent)
     return None
 
   def _answer_date(self, intent):
@@ -547,6 +578,178 @@ class Assistant:
     else:
       label = "That date"
     return f"{label} is {target.strftime('%A, %d %B %Y')}."
+
+  # -- memory -----------------------------------------------------------
+
+  def _memory_context(self):
+    """Persistent memories that belong in the system prompt."""
+    if self._memory is None:
+      return ""
+    return self._memory.prompt_block(self._settings.memory.inject_items)
+
+  def _note_usage(self, name, entities):
+    """Count apps, folders and websites the user actually works with."""
+    if self._memory is None:
+      return
+    if name == "open_app":
+      self._memory.note_usage("app", entities.get("application"))
+    elif name == "open_url":
+      self._memory.note_usage("website", entities.get("url"))
+    elif name in {"open_path", "list_files"}:
+      self._memory.note_usage("folder", entities.get("path"))
+
+  def _save_memory(self, category, content, temporary=False):
+    try:
+      _memory_id, created = self._memory.add(
+          category, content, temporary=temporary
+      )
+    except MemoryStoreError as exc:
+      log.warning("Could not save memory: %s", exc)
+      return "I couldn't save that to memory, sir."
+    if not created:
+      return "I already remember that, sir."
+    if temporary:
+      return f"Saved to temporary memory: {content}."
+    return f"Saved to memory: {content}."
+
+  def _remember_memory(self, intent):
+    if self._memory is None:
+      return MEMORY_DISABLED
+    content = intent.entities.get("content", "")
+    if not content:
+      return "What should I remember, sir?"
+    return self._save_memory(
+        intent.entities.get("category") or classify_memory(content),
+        content,
+        temporary=bool(intent.entities.get("temporary")),
+    )
+
+  def _format_memories(self, title, rows):
+    if not rows:
+      return "I don't have anything in memory about that, sir."
+    lines = []
+    for item in rows[:8]:
+      text = item["content"]
+      if len(text) > 80:
+        text = text[:77].rstrip() + "..."
+      label = " [temporary]" if item["temporary"] else ""
+      lines.append(
+          f"[{item['id']}] ({item['category']}) {text}{label}"
+      )
+    return title + "\n" + "\n".join(lines)
+
+  def _memory_reply(self, intent):
+    if self._memory is None:
+      return MEMORY_DISABLED
+    if intent.name == "list_memory":
+      return self._format_memories(
+          "Saved memories:", self._memory.list()
+      )
+    query = intent.entities.get("query", "")
+    if intent.name == "search_memory":
+      return self._format_memories(
+          "Matching memories:", self._memory.search(query)
+      )
+    rows = self._memory.search(query)
+    if not rows:
+      return "I don't have that in memory, sir."
+    if len(rows) > 1:
+      return (
+          self._format_memories("I remember several things:", rows)
+          + "\nSay /memory delete ID to remove one."
+      )
+    item = rows[0]
+    self._memory.delete(item["id"])
+    return f"Forgotten: {item['content']}."
+
+  def _memory_command(self, parts):
+    if self._memory is None:
+      return MEMORY_DISABLED
+    action = parts[0].lower() if parts else "list"
+    rest = parts[1:]
+    if action in {"list", "show"}:
+      return self._format_memories(
+          "Saved memories:", self._memory.list()
+      )
+    if action == "search":
+      query = " ".join(rest)
+      if not query:
+        return "Usage: /memory search TEXT"
+      return self._format_memories(
+          "Matching memories:", self._memory.search(query)
+      )
+    if action == "add":
+      category = (
+          rest[0].lower()
+          if rest and rest[0].lower() in CATEGORIES
+          else None
+      )
+      content = " ".join(rest[1:] if category else rest)
+      if not content:
+        return "Usage: /memory add [category] TEXT"
+      return self._save_memory(
+          category or classify_memory(content), content
+      )
+    if action == "temporary":
+      content = " ".join(rest)
+      if not content:
+        return "Usage: /memory temporary TEXT"
+      return self._save_memory(
+          classify_memory(content), content, temporary=True
+      )
+    if action == "edit":
+      if len(rest) < 2 or not rest[0].isdigit():
+        return "Usage: /memory edit ID TEXT"
+      try:
+        changed = self._memory.update(
+            int(rest[0]), content=" ".join(rest[1:])
+        )
+      except MemoryStoreError as exc:
+        log.warning("Could not update memory: %s", exc)
+        return "I couldn't update that memory, sir."
+      return (
+          "Updated, sir."
+          if changed
+          else "There is no memory with that id, sir."
+      )
+    if action == "delete":
+      if len(rest) != 1 or not rest[0].isdigit():
+        return "Usage: /memory delete ID"
+      changed = self._memory.delete(int(rest[0]))
+      return (
+          "Forgotten, sir."
+          if changed
+          else "There is no memory with that id, sir."
+      )
+    if action == "frequent":
+      kind = (
+          rest[0].lower()
+          if rest and rest[0].lower() in USAGE_KINDS
+          else None
+      )
+      rows = self._memory.frequent(kind)
+      if not rows:
+        return "I haven't recorded any usage yet, sir."
+      return "Most used:\n" + "\n".join(
+          f"{item['value']} ({item['uses']} uses)" for item in rows
+      )
+    if action == "clear":
+      if rest and rest[0].lower() == "confirm":
+        self._memory_clear_pending = False
+        removed = self._memory.clear()
+        return f"Deleted {removed} memories, sir."
+      if rest and rest[0].lower() == "temporary":
+        removed = self._memory.clear(temporary_only=True)
+        return f"Deleted {removed} temporary memories, sir."
+      self._memory_clear_pending = True
+      return (
+          "This deletes every saved memory. Run /memory clear confirm"
+          " to proceed."
+      )
+    return (
+        "Memory commands: list, search, add, temporary, edit, delete,"
+        " frequent, clear."
+    )
 
   def _remember(self, user_message, answer):
     if not self._config.enabled:
@@ -674,6 +877,7 @@ class Assistant:
       self.conversation.reset()
       self._session_id = uuid.uuid4().hex
       self._forget_pending = False
+      self._memory_clear_pending = False
       self._pending_tool = None
       self._pending_plan = None
       return "Starting a new conversation, sir."
@@ -716,6 +920,8 @@ class Assistant:
       return "Cancelled, sir."
     if command == "/forget":
       return self._forget(argument)
+    if command == "/memory":
+      return self._memory_command(parts[1:])
     if command == "/help":
       return HELP_TEXT
     return f"Unknown command {command}. Try /help."

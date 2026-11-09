@@ -208,8 +208,8 @@ def build_registry(settings):
   add(
       "list_files",
       "List a folder",
-      lambda path=".": files.list_files(config, path),
-      {"path": str},
+      lambda path=".", limit=0: files.list_files(config, path, limit or None),
+      {"path": str, "limit": int},
   )
   add(
       "search_files",

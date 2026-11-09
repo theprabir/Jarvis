@@ -39,6 +39,7 @@ from core.memory import (
     MemoryStoreError,
     classify as classify_memory,
 )
+from core.tasks import TaskEngine, TaskError
 from core.timers import TimerError, TimerService
 from core.utilities import humanize_duration
 from tools import build_registry
@@ -150,7 +151,8 @@ HELP_TEXT = (
     " Commands: /new starts a fresh conversation, /mode short|detailed|technical"
     " changes how much I say, /web TEXT answers from web sources, /history"
     " shows recent exchanges, /memory manages saved and learned memories"
-    " (list, learned, episodes, explain ID), /intent TEXT"
+    " (list, learned, episodes, explain ID), /tasks lists durable plans"
+    " (show, approve, resume, cancel, history), /intent TEXT"
     " shows the detected intent as JSON, /tools lists computer tools, /confirm"
     " and /cancel handle pending actions, /forget deletes saved history after"
     " confirmation. Timers, reminders, conversions, weather and text tools work"
@@ -236,6 +238,7 @@ class Assistant:
     self._memory_clear_pending = False
     self._pending_tool = None
     self._pending_plan = None
+    self._pending_task = None
     self._episode_clear_pending = False
     self._session = ShortTermMemory(settings.memory.short_term_items)
     self._learned = set()
@@ -243,6 +246,7 @@ class Assistant:
     self._searcher = None
     self._weather = None
     self._timers = None
+    self._tasks = None
     self._notifier = None
     self.registry = (
         build_registry(settings) if settings.tools.enabled else None
@@ -287,7 +291,11 @@ class Assistant:
       return "I didn't catch that, sir."
     if text.startswith("/"):
       return self._command(text)
-    if self._pending_tool is not None or self._pending_plan is not None:
+    if (
+        self._pending_tool is not None
+        or self._pending_plan is not None
+        or self._pending_task is not None
+    ):
       answer = self._confirmation_reply(text)
       if answer is not None:
         return answer
@@ -295,6 +303,7 @@ class Assistant:
       # the user later.
       self._pending_tool = None
       self._pending_plan = None
+      self._pending_task = None
 
     if self.registry is not None:
       plan = plan_file_actions(
@@ -422,8 +431,13 @@ class Assistant:
     self._notifier = callback
     if self._timers is not None:
       self._timers.set_notifier(callback)
+    if self._tasks is not None:
+      self._tasks.set_notifier(callback)
 
   def close(self):
+    if self._tasks is not None:
+      self._tasks.close()
+      self._tasks = None
     if self._timers is not None:
       self._timers.close()
       self._timers = None
@@ -467,6 +481,24 @@ class Assistant:
     return self._timers
 
   # -- web search -------------------------------------------------------
+
+  def _get_tasks(self):
+    """Build the durable task engine only when a plan is first requested."""
+    if not self._settings.tasks.enabled:
+      return None
+    if self._tasks is None:
+      if self.registry is None:
+        return None
+      try:
+        self._tasks = TaskEngine(
+            self._settings.tasks,
+            self.registry,
+            notifier=self._notifier,
+        )
+      except TaskError as exc:
+        log.error("Task planning unavailable: %s", exc)
+        return None
+    return self._tasks
 
   def _get_searcher(self):
     """Build the searcher on first use so text-only sessions stay light."""
@@ -594,12 +626,35 @@ class Assistant:
     if lowered in YES_WORDS:
       return self._confirm_pending()
     if lowered in NO_WORDS:
-      self._pending_tool = None
-      self._pending_plan = None
+      self._cancel_pending()
       return "Cancelled, sir."
     return None
 
+  def _cancel_pending(self):
+    """Drop pending actions and cancel a task still awaiting approval."""
+    task_id, self._pending_task = self._pending_task, None
+    self._pending_tool = None
+    self._pending_plan = None
+    if task_id is None:
+      return
+    tasks = self._get_tasks()
+    if tasks is not None:
+      try:
+        tasks.cancel(task_id)
+      except TaskError as exc:
+        log.warning("Could not cancel pending task: %s", exc)
+
   def _confirm_pending(self):
+    if self._pending_task is not None:
+      task_id, self._pending_task = self._pending_task, None
+      tasks = self._get_tasks()
+      if tasks is None:
+        return "Task planning is disabled, sir."
+      try:
+        task = tasks.approve(task_id)
+      except TaskError as exc:
+        return f"I couldn't start that task, sir: {exc}."
+      return self._task_report(task)
     if self._pending_plan is not None:
       return self._run_plan()
     pending, self._pending_tool = self._pending_tool, None
@@ -664,6 +719,188 @@ class Assistant:
     self._remember(user_text, answer)
     return answer
 
+  # -- durable tasks ----------------------------------------------------
+
+  def _task_organize(self, intent):
+    tasks = self._get_tasks()
+    if tasks is None:
+      return "Task planning is disabled, sir."
+    path = intent.entities.get("path") or "Downloads"
+    background = bool(intent.entities.get("background"))
+    try:
+      task = tasks.create_organize(path, background=background)
+    except TaskError as exc:
+      return f"I couldn't plan that, sir: {exc}."
+    files = int(task.context.get("files") or 0)
+    label = task.context.get("label") or path
+    if not files:
+      tasks.cancel(task.id)
+      return f"{label} has no files to organize, sir."
+    categories = task.context.get("categories") or {}
+    self._pending_task = task.id
+    self._pending_tool = None
+    self._pending_plan = None
+    mode = " in the background" if task.background else ""
+    return (
+        f"Task #{task.id} will organize {files} files into"
+        f" {len(categories)} folders under {label}{mode}."
+        " Run /confirm to approve."
+    )
+
+  def _task_list_text(self, tasks):
+    rows = tasks.list(limit=10)
+    if not rows:
+      return "You have no tasks yet, sir."
+    return "Tasks:\n" + "\n".join(
+        f"[{task.id}] {task.status} {task.goal}"
+        f" ({task.done_count()}/{len(task.steps)})"
+        for task in rows
+    )
+
+  def _task_detail(self, task):
+    lines = [
+        f"Task #{task.id}: {task.goal}",
+        f"Status: {task.status}",
+        f"Progress: {task.done_count()}/{len(task.steps)} steps",
+    ]
+    if task.error:
+      lines.append(f"Error: {task.error}")
+    for index, step in enumerate(task.steps, 1):
+      extra = f" (attempt {step.attempts})" if step.attempts else ""
+      lines.append(f"{index}. [{step.status}] {step.name}{extra}")
+      if step.error:
+        lines.append(f"   {shorten(step.error, 120)}")
+    return "\n".join(lines)
+
+  def _task_report(self, task):
+    if task is None:
+      return "There is no task with that id, sir."
+    if task.status == "completed":
+      files = int(task.context.get("files") or 0)
+      categories = len(task.context.get("categories") or {})
+      checks = task.verified_count()
+      return (
+          f"Task #{task.id} completed: {files} files into"
+          f" {categories} folders, {checks} checks passed."
+      )
+    if task.status == "failed":
+      return (
+          f"Task #{task.id} failed: {task.error}"
+          f" Run /tasks resume {task.id} to retry."
+      )
+    if task.status == "awaiting_step":
+      return (
+          f"Task #{task.id} is waiting at step {task.current_step}."
+          f" Run /tasks approve-step {task.id} to continue."
+      )
+    if task.status == "awaiting_approval":
+      return (
+          f"Task #{task.id} is waiting for approval."
+          f" Run /tasks approve {task.id}."
+      )
+    if task.status == "cancelled":
+      return f"Task #{task.id} was cancelled."
+    if task.status == "paused":
+      return (
+          f"Task #{task.id} is paused after an interruption."
+          f" Run /tasks resume {task.id} to continue."
+      )
+    if task.background:
+      return (
+          f"Task #{task.id} started in the background."
+          f" Run /tasks show {task.id} for progress."
+      )
+    return f"Task #{task.id} is {task.status}. /tasks show {task.id}."
+
+  def _task_history_text(self, tasks):
+    rows = tasks.events(limit=self._settings.tasks.history_items)
+    if not rows:
+      return "There is no task history yet, sir."
+    return "Task history:\n" + "\n".join(
+        f"{row['created_at'][5:16]} #{row['task_id']} {row['kind']}:"
+        f" {shorten(row['message'], 100)}"
+        for row in rows
+    )
+
+  def _task_reply(self, intent):
+    tasks = self._get_tasks()
+    if tasks is None:
+      return "Task planning is disabled, sir."
+    if intent.name == "task_list":
+      return self._task_list_text(tasks)
+    if intent.name == "task_history":
+      return self._task_history_text(tasks)
+    try:
+      task = tasks.get(int(intent.entities.get("id") or 0))
+    except (TypeError, ValueError):
+      task = None
+    if task is None:
+      return "There is no task with that id, sir."
+    if intent.name == "task_show":
+      return self._task_detail(task)
+    try:
+      if intent.name == "task_approve":
+        task = tasks.approve(task.id)
+      elif intent.name == "task_resume":
+        task = tasks.resume(task.id)
+      elif intent.name == "task_cancel":
+        task = tasks.cancel(task.id)
+    except TaskError as exc:
+      return f"I couldn't update that task, sir: {exc}."
+    return self._task_report(task)
+
+  def _tasks_command(self, parts):
+    tasks = self._get_tasks()
+    if tasks is None:
+      return "Task planning is disabled, sir."
+    action = parts[0].lower() if parts else "list"
+    rest = parts[1:]
+    if action in {"list", "ls"}:
+      return self._task_list_text(tasks)
+    if action in {"history", "log"}:
+      return self._task_history_text(tasks)
+    if action in {"show", "status", "details"}:
+      if len(rest) != 1 or not rest[0].isdigit():
+        return "Usage: /tasks show ID"
+      task = tasks.get(int(rest[0]))
+      return (
+          self._task_detail(task)
+          if task is not None
+          else "There is no task with that id, sir."
+      )
+    if action in {"approve", "run", "start", "approve-step"}:
+      if len(rest) != 1 or not rest[0].isdigit():
+        return f"Usage: /tasks {action} ID"
+      try:
+        task = (
+            tasks.approve_step(int(rest[0]))
+            if action == "approve-step"
+            else tasks.approve(int(rest[0]))
+        )
+      except TaskError as exc:
+        return f"I couldn't start that task, sir: {exc}."
+      return self._task_report(task)
+    if action in {"resume", "retry"}:
+      if len(rest) != 1 or not rest[0].isdigit():
+        return "Usage: /tasks resume ID"
+      try:
+        task = tasks.resume(int(rest[0]))
+      except TaskError as exc:
+        return f"I couldn't resume that task, sir: {exc}."
+      return self._task_report(task)
+    if action in {"cancel", "stop"}:
+      if len(rest) != 1 or not rest[0].isdigit():
+        return "Usage: /tasks cancel ID"
+      try:
+        task = tasks.cancel(int(rest[0]))
+      except TaskError as exc:
+        return f"I couldn't cancel that task, sir: {exc}."
+      return self._task_report(task)
+    return (
+        "Task commands: list, show ID, approve ID, approve-step ID,"
+        " resume ID, cancel ID, history."
+    )
+
   # -- deterministic intents -------------------------------------------
 
   def _answer_intent(self, intent):
@@ -698,6 +935,17 @@ class Assistant:
       return f"That is {intent.entities.get('result')}."
     if intent.name == "weather":
       return self._answer_weather(intent)
+    if intent.name == "task_organize":
+      return self._task_organize(intent)
+    if intent.name in {
+        "task_list",
+        "task_show",
+        "task_approve",
+        "task_resume",
+        "task_cancel",
+        "task_history",
+    }:
+      return self._task_reply(intent)
     if intent.name in {
         "timer_set",
         "reminder_set",
@@ -1243,6 +1491,7 @@ class Assistant:
       self._last_episode = ""
       self._pending_tool = None
       self._pending_plan = None
+      self._pending_task = None
       return "Starting a new conversation, sir."
     if command == "/mode":
       if not argument:
@@ -1276,15 +1525,20 @@ class Assistant:
     if command == "/confirm":
       return self._confirm_pending()
     if command == "/cancel":
-      if self._pending_tool is None and self._pending_plan is None:
+      if (
+          self._pending_tool is None
+          and self._pending_plan is None
+          and self._pending_task is None
+      ):
         return "There is nothing to cancel, sir."
-      self._pending_tool = None
-      self._pending_plan = None
+      self._cancel_pending()
       return "Cancelled, sir."
-    if command == "/forget":
-      return self._forget(argument)
     if command == "/memory":
       return self._memory_command(parts[1:])
+    if command == "/tasks":
+      return self._tasks_command(parts[1:])
+    if command == "/forget":
+      return self._forget(argument)
     if command == "/help":
       return HELP_TEXT
     return f"Unknown command {command}. Try /help."

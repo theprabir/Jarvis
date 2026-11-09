@@ -6,19 +6,19 @@ around a small local LLM (Llama 3.2 1B Instruct Q4_K_M) served by the existing
 deterministic Python modules do the audio, routing and tool work.
 
 **Current status:** Phase 1 (stabilization) and feature sets **4.1 Voice
-Interface** through **4.8 Automatic Memory Learning** complete, released as
-**v0.2.0** as JARVIS moves into its moderate-advanced feature sets. JARVIS
-listens through the microphone with push-to-talk, transcribes offline with
-Vosk, keeps multi-turn context across restarts, remembers explicitly saved
-preferences, facts, paths and folders, learns high-confidence first-person
-facts with provenance and expiry, summarizes substantive exchanges as
-episodic memory, answers simple questions deterministically through Python,
-operates the computer through validated tools, searches the web and answers
-only from the fetched evidence with sources, converts units and text, reports
-the weather, runs timers and persisted reminders, falls back to the local
-model for everything else, and speaks through an interruptible Windows SAPI
-voice. Feature set 4.9 is next (see `PLANS-STACK-FEATURES.md`,
-`CHANGELOG.md`).
+Interface** through **4.9 Task Planning and Execution** complete, released as
+**v0.2.1** in the moderate-advanced feature line. JARVIS listens through the
+microphone with push-to-talk, transcribes offline with Vosk, keeps multi-turn
+context across restarts, remembers explicitly saved preferences, facts, paths
+and folders, learns high-confidence first-person facts with provenance and
+expiry, summarizes substantive exchanges as episodic memory, answers simple
+questions deterministically through Python, operates the computer through
+validated tools, plans and executes durable multi-step tasks with approval,
+checkpoints and verification, searches the web and answers only from the
+fetched evidence with sources, converts units and text, reports the weather,
+runs timers and persisted reminders, falls back to the local model for
+everything else, and speaks through an interruptible Windows SAPI voice.
+Feature set 4.10 is next (see `PLANS-STACK-FEATURES.md`, `CHANGELOG.md`).
 
 ## Requirements
 
@@ -62,6 +62,7 @@ All runtime settings live in `config/settings.toml`:
 | `[voice]` | Voice mode flag, microphone, push-to-talk key, VAD, silence/record limits, Vosk model path |
 | `[conversation]` | Multi-turn context, answer mode, token limits, summarization, history database |
 | `[tools]` | File sandbox root, read/search limits, allowed applications and commands |
+| `[tasks]` | Durable task database, step limit, retries, parallel workers and approval |
 | `[web]` | Search provider, result and query limits, page extraction, evidence budget, cache |
 | `[memory]` | Enable memory, its SQLite file, automatic learning, retention and how many memories reach the prompt |
 | `[weather]` | Weather flag, metric or imperial units, default location and timeout |
@@ -174,6 +175,60 @@ only applications with a visible window, never background, startup,
 system, shell or JARVIS processes.
 Destructive file actions cannot escape `[tools] root`, and applications and
 commands must be listed in `config/settings.toml`.
+
+### Task planning and execution
+
+Multi-step requests become durable plans instead of one-shot actions. The
+clearest built-in workflow is folder organization: `organize my downloads
+folder` inspects the folder, groups files by type, proposes the destination
+folders, asks for approval, moves the files, verifies each destination and
+reports the result. Add `in the background` to run the approved plan without
+blocking the conversation.
+
+| Capability | Behaviour |
+| --- | --- |
+| Planning | The organizer decomposes a folder into inspect, create-folder, move and verify steps |
+| Dependencies | A step waits until every prerequisite has completed; skipped or failed prerequisites skip their dependants |
+| Conditions | A step can run only when an earlier result matches a field comparison, such as a non-empty folder |
+| Execution | Steps run sequentially by default; independent lightweight steps marked parallel use the configured workers |
+| Approval | Destructive plans wait for `/confirm`; a step can also require its own approval checkpoint |
+| Checkpoints | Task and step state is saved to SQLite after every change, with a visible current step and progress count |
+| Retries | A step can retry a configurable number of times before it fails the task |
+| Replanning | A failed move is retried with a collision-safe name; custom engines can install a replanner for other recovery |
+| Cancellation | `/tasks cancel ID` stops at the next checkpoint; pending approvals can be cancelled with `/cancel` |
+| Resumption | Interrupted or failed tasks resume from completed steps with `/tasks resume ID` |
+| Verification | A verify step lists the destination and requires every expected file name to be present |
+| History | Every plan, approval, attempt, retry, completion and failure is recorded in `task_events` |
+| Background | Approved background tasks run in a daemon thread and notify when they finish |
+
+| Control | How |
+| --- | --- |
+| Plan | `organize my downloads folder`, `organize my downloads folder in the background`, `organize C:/temp/inbox` |
+| List | `/tasks`, `list tasks`, `what tasks are running`, `task status` |
+| Detail | `/tasks show ID`, `show task ID` |
+| Approve | `/confirm`, `/tasks approve ID`, `approve task ID` |
+| Approve a step | `/tasks approve-step ID` when a step checkpoint pauses the plan |
+| Resume | `/tasks resume ID`, `resume task ID` |
+| Cancel | `/tasks cancel ID`, `cancel task ID` |
+| History | `/tasks history`, `task history` |
+
+Tasks run through the same validated tools and `[tools] root` sandbox as
+direct actions, so the folder must be inside that root. Set `root` to your
+home folder to organize the real `Downloads` directory. The task database
+shares `data/jarvis.db`; task tables are separate from conversation and
+memory tables.
+
+```toml
+[tasks]
+enabled = true
+db = "data/jarvis.db"
+max_steps = 50
+max_retries = 1
+retry_delay_s = 0.2
+parallel_workers = 2
+approval_required = true
+history_items = 20
+```
 
 ### Memory
 
@@ -373,6 +428,9 @@ web search ranking, caching and grounded answers, explicit memory storage,
 search and prompt injection, automatic candidate extraction and importance,
 conflict superseding and history, ranked retrieval, expiry, episodic
 summaries and controls, short-term session context, auto-learning disabled,
+durable task planning, dependencies, conditions, approvals, retries,
+dynamic replanning, parallel and background execution, cancellation,
+resumption, verification and folder organization,
 unit conversions, text and size formatting,
 Open-Meteo response parsing, timer polling and reminder persistence, Escape
 interruption, VAD segmentation,
@@ -409,6 +467,7 @@ web/extract.py          Page fetching (primp/httpx) and main-content extraction
 web/cache.py            Bounded SQLite search cache with stale fallback
 core/memory.py          Layered memory store, FTS5 search, episodes, ranking
 core/learning.py        Candidate extraction, importance, episodes, short-term buffer
+core/tasks.py           Durable plans, execution, approval, checkpoints, history
 core/utilities.py       Unit conversion, text, size, duration and reminder parsing
 core/timers.py          In-memory timers, persisted reminders and notifications
 core/weather.py         Open-Meteo geocoding and current conditions
@@ -443,10 +502,18 @@ logs/                   Runtime logs (git-ignored)
   Set it to your Desktop, for example `root = "C:/Users/ADMIN/Desktop"`, to
   create and edit files there; a request for a location outside the root is
   refused with that hint instead of failing obscurely.
-- Multi-step plans cover explicit file actions only (create, write, read,
-  list, search, rename, copy, move, delete). A request that needs follow-up
-  reasoning, such as "write the file location in it", is not planned: the
-  sequence stops at that clause and the confirmation shows what will run.
+- Multi-step file plans cover explicit file actions only (create, write,
+  read, list, search, rename, copy, move, delete). A request that needs
+  follow-up reasoning, such as "write the file location in it", is not
+  planned: the sequence stops at that clause and the confirmation shows what
+  will run.
+- The conversational task planner currently covers folder organization. Other
+  multi-step requests still use the explicit file-action planner or the model.
+  Organization is capped at `[tasks] max_steps` (50) and inspects at most that
+  many items, so a very large folder must be split into smaller runs.
+- Task steps stay inside `[tools] root`. Dynamic replanning automatically
+  handles move-name collisions; other step failures stop the task and require
+  `/tasks resume ID` after the cause is fixed.
 - Web search still reads at most three sources and 1000 characters of
   evidence (2000 on the retry), so a fact split across several pages can be
   missed. Pages behind a login or a CAPTCHA cannot be read at all: such a

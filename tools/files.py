@@ -167,7 +167,7 @@ def delete_path(config, path):
   return ToolResult(True, f"Deleted {target.name}.", {"path": str(target)})
 
 
-def list_files(config, path="."):
+def list_files(config, path=".", limit=None):
   folder = _resolve(config, path)
   if not folder.is_dir():
     raise ToolError(f"{folder.name} is not a folder")
@@ -178,14 +178,16 @@ def list_files(config, path="."):
   if not entries:
     return ToolResult(True, f"{folder.name} is empty.", {"items": []})
 
-  shown = entries[: config.search_limit]
+  count = max(1, min(int(limit or config.search_limit), 5000))
   names = [
-      entry.name + ("/" if entry.is_dir() else "") for entry in shown
+      entry.name + ("/" if entry.is_dir() else "")
+      for entry in entries[:count]
   ]
-  extra = len(entries) - len(shown)
+  preview = names[: config.search_limit]
+  extra = len(entries) - len(preview)
   text = f"{folder.name} contains {len(entries)} item"
   text += "" if len(entries) == 1 else "s"
-  text += ": " + ", ".join(names)
+  text += ": " + ", ".join(preview)
   if extra > 0:
     text += f", and {extra} more"
   text += "."

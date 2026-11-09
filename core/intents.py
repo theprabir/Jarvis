@@ -95,6 +95,13 @@ CONVERSATION_INTENTS = frozenset(
         "reminder_set",
         "timer_list",
         "timer_cancel",
+        "task_organize",
+        "task_list",
+        "task_show",
+        "task_approve",
+        "task_resume",
+        "task_cancel",
+        "task_history",
         "history",
         "forget",
         "intent",
@@ -116,6 +123,7 @@ COMMANDS = frozenset(
         "confirm",
         "cancel",
         "tools",
+        "tasks",
     }
 )
 
@@ -710,6 +718,88 @@ def recognize_memory(text):
   return None
 
 
+_TASK_ORGANIZE = re.compile(
+    r"^(?:please\s+)?(?:organize|sort|tidy)\s+(?P<path>.+)$", re.I
+)
+_TASK_BACKGROUND = re.compile(
+    r"\s+in\s+(?:the\s+)?background\b", re.I
+)
+_TASK_LIST = (
+    re.compile(r"^(?:list|show)\s+(?:my\s+)?tasks$"),
+    re.compile(
+        r"^(?:what\s+)?tasks?\s+(?:are\s+)?(?:running|pending|active)$"
+    ),
+    re.compile(r"^task\s+status$"),
+    re.compile(r"^tasks$"),
+)
+_TASK_SHOW = re.compile(
+    r"^(?:show|describe)\s+task\s+#?(?P<id>\d+)$"
+)
+_TASK_APPROVE = re.compile(
+    r"^(?:approve|run|start)\s+task\s+#?(?P<id>\d+)$"
+)
+_TASK_RESUME = re.compile(
+    r"^(?:resume|retry)\s+task\s+#?(?P<id>\d+)$"
+)
+_TASK_CANCEL = re.compile(
+    r"^(?:cancel|stop)\s+task\s+#?(?P<id>\d+)$"
+)
+_TASK_HISTORY = re.compile(r"^task\s+(?:history|log)$")
+_TASK_FOLDERS = {
+    "downloads": "Downloads",
+    "desktop": "Desktop",
+    "documents": "Documents",
+    "pictures": "Pictures",
+    "music": "Music",
+    "videos": "Videos",
+}
+
+
+def recognize_tasks(text):
+  """Recognize organization plans and their user-facing controls."""
+  source = (text or "").strip().rstrip("?.!")
+  lowered = source.lower()
+  if not lowered:
+    return None
+  match = _TASK_ORGANIZE.match(source)
+  if match:
+    phrase = match.group("path").strip()
+    background = bool(_TASK_BACKGROUND.search(phrase))
+    phrase = _TASK_BACKGROUND.sub("", phrase).strip()
+    had_folder_word = bool(
+        re.search(r"\s+(?:folder|directory)$", phrase)
+    )
+    phrase = re.sub(r"\s+(?:folder|directory)$", "", phrase).strip()
+    phrase = re.sub(r"^(?:my|the)\s+", "", phrase).strip()
+    phrase = phrase.strip(' "\'')
+    known = phrase.lower() in _TASK_FOLDERS
+    path_like = "/" in phrase or "\\" in phrase
+    if not phrase or not (had_folder_word or known or path_like):
+      return None
+    if known and "/" not in phrase and "\\" not in phrase:
+      phrase = _TASK_FOLDERS[phrase.lower()]
+    return Intent(
+        "task_organize",
+        0.9,
+        {"path": phrase, "background": background},
+    )
+  for pattern in _TASK_LIST:
+    if pattern.match(lowered):
+      return Intent("task_list", 0.9)
+  for pattern, name in (
+      (_TASK_SHOW, "task_show"),
+      (_TASK_APPROVE, "task_approve"),
+      (_TASK_RESUME, "task_resume"),
+      (_TASK_CANCEL, "task_cancel"),
+  ):
+    match = pattern.match(lowered)
+    if match:
+      return Intent(name, 0.9, {"id": int(match.group("id"))})
+  if _TASK_HISTORY.match(lowered):
+    return Intent("task_history", 0.9)
+  return None
+
+
 def recognize_computer(text, allowed_apps=(), allowed_commands=()):
   """Recognize a computer-interaction request and extract its arguments."""
   lowered = text.lower().strip().rstrip("?.!")
@@ -1111,6 +1201,9 @@ class IntentRouter:
     intent = recognize_computer(
         text, self.allowed_apps, self.allowed_commands
     )
+    if intent is not None:
+      return intent
+    intent = recognize_tasks(text)
     if intent is not None:
       return intent
     intent = recognize_web(text)

@@ -7,6 +7,96 @@ all feature sets in a phase increments the middle number and resets the patch.
 feature sets in this level increment the patch (v0.2.1, …), and completing the
 level increments the middle number.
 
+## v0.2.1 — 2026-11-09
+
+**Task planning and execution (feature set 4.9)**
+
+### Implemented functionality
+
+- **Durable task model** — a task is a goal plus ordered steps with tool
+  arguments, dependencies, conditions, retries, verification and status,
+  persisted in the `tasks` table. `task_events` records every plan, approval,
+  retry, replan, completion, cancellation and failure.
+- **Planning and decomposition** — `organize my downloads folder` inspects the
+  folder, groups files into Documents, Images, Audio, Video, Archives, Code,
+  Installers and Other, and builds inspect, create-folder, move and verify
+  steps. Files already in a destination receive a collision-safe name.
+- **Dependencies and conditions** — steps wait for prerequisites to complete.
+  Failed or skipped prerequisites skip dependants, and a step can run only
+  when an earlier result matches a declared comparison.
+- **Sequential and parallel execution** — steps run in order by default;
+  independent steps marked parallel run through `parallel_workers` threads.
+- **Approval checkpoints** — destructive plans wait for `/confirm` (or
+  `/tasks approve ID`). Individual steps can also pause for
+  `/tasks approve-step ID`.
+- **Status and checkpoints** — task and step state are saved after every
+  change. `/tasks show ID` reports progress, current status, attempts and
+  errors; interrupted runs are recovered as paused checkpoints.
+- **Retries and error recovery** — each step can retry before failing. A
+  failed organization move is dynamically replanned with a collision-safe
+  target, and custom engines can install their own replanner.
+- **Cancellation and resumption** — `/tasks cancel ID` stops at the next
+  checkpoint; `/tasks resume ID` resets incomplete steps, preserves completed
+  work and continues. Cancelled tasks can be resumed explicitly.
+- **Execution verification** — verify steps list the destination folder and
+  require every expected file name to be present; a failed check fails the
+  task instead of reporting success.
+- **Execution history** — `/tasks history` shows recent task events from
+  `task_events`, bounded by `history_items`.
+- **Background execution** — an approved background plan runs in a daemon
+  thread, returns immediately to the conversation and notifies through the
+  configured speaker when it reaches a terminal state.
+- **Natural controls and commands** — `organize ...`, `list tasks`, `show task
+  ID`, `approve task ID`, `resume task ID`, `cancel task ID`, `task history`,
+  plus `/tasks` list/show/approve/approve-step/resume/cancel/history.
+- **Configuration** — `[tasks]` adds `enabled`, `db`, `max_steps`,
+  `max_retries`, `retry_delay_s`, `parallel_workers`, `approval_required` and
+  `history_items`, all validated at load time.
+- **Folder inspection** — `list_files` accepts a `limit` argument and returns
+  the full requested item list in its structured data while keeping the
+  spoken preview short, so the planner sees beyond the display cap.
+
+### Files created or modified
+
+New `core/tasks.py` and `tests/test_tasks.py`. Modified `core/assistant.py`
+(task replies, approval flow, `/tasks`, `/cancel`, `/new`, help),
+`core/intents.py` (task intents and recognizers), `core/config.py`
+(`TasksConfig`, settings and validation), `config/settings.toml`, `tools/files.py`
+and `tools/__init__.py` (folder inspection limit and registry argument),
+`README.md`, `CHANGELOG.md`.
+
+### Bug fixes found while verifying
+
+- Folder inspection originally returned only the display preview in
+  structured data, so an organization plan silently missed files beyond
+  `search_limit`. `list_files` now accepts a limit and returns the full
+  requested list while keeping the text preview short.
+- Interrupted-task recovery marked tasks that were waiting for step approval
+  as paused. It now recovers only tasks that were actually running, leaving
+  approval checkpoints intact.
+- Parallel step execution needed checkpoint writes to remain on the main
+  thread; tool execution is parallel but task state is saved serially.
+
+### Testing status
+
+All tests pass offline with `.venv\Scripts\python -m unittest discover -s
+tests`: **342 tests**, including 25 new task tests covering dependencies,
+conditions, sequential and parallel execution, retries, approvals,
+verification, cancellation, resumption, dynamic replanning, background
+notification, persistence, organization and assistant controls. `compileall`
+passes. No model, microphone or desktop action is needed by the suite.
+
+### Known limitations
+
+- The conversational planner currently supports folder organization. Other
+  multi-step requests use the explicit file-action planner or the model.
+- Organization is capped at `[tasks] max_steps` and inspects at most that many
+  items; very large folders must be split.
+- Steps stay inside `[tools] root`. Only move-name collisions are replanned
+  automatically; other failures stop the task and need `/tasks resume ID`.
+- A background task pauses at its next checkpoint when JARVIS exits and is
+  resumed explicitly with `/tasks resume ID` after the next start.
+
 ## v0.2.0 — 2026-11-09
 
 **Automatic memory learning (feature set 4.8) — moderate-advanced line begins**

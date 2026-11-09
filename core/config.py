@@ -140,6 +140,24 @@ class WeatherConfig:
 
 
 @dataclass(frozen=True)
+class TasksConfig:
+  enabled: bool = True
+  # Plans share the conversation database; task tables are separate.
+  db: str = "data/jarvis.db"
+  max_steps: int = 50
+  max_retries: int = 1
+  retry_delay_s: float = 0.2
+  parallel_workers: int = 2
+  approval_required: bool = True
+  history_items: int = 20
+
+  @property
+  def resolved_db(self) -> Path:
+    path = Path(self.db)
+    return path if path.is_absolute() else (PROJECT_ROOT / path).resolve()
+
+
+@dataclass(frozen=True)
 class ToolsConfig:
   enabled: bool = True
   root: str = "."
@@ -205,6 +223,7 @@ class Settings:
   voice: VoiceConfig
   conversation: ConversationConfig
   tools: ToolsConfig
+  tasks: TasksConfig
   memory: MemoryConfig
   weather: WeatherConfig
   web: WebConfig
@@ -313,6 +332,23 @@ def _validate(settings):
   _require(
       2.0 <= weather.timeout_s <= 30.0,
       "[weather] timeout_s must be 2-30",
+  )
+
+  tasks = settings.tasks
+  _require(bool(tasks.db), "[tasks] db must not be empty")
+  _require(3 <= tasks.max_steps <= 200, "[tasks] max_steps must be 3-200")
+  _require(0 <= tasks.max_retries <= 3, "[tasks] max_retries must be 0-3")
+  _require(
+      0.0 <= tasks.retry_delay_s <= 5.0,
+      "[tasks] retry_delay_s must be 0-5",
+  )
+  _require(
+      1 <= tasks.parallel_workers <= 4,
+      "[tasks] parallel_workers must be 1-4",
+  )
+  _require(
+      1 <= tasks.history_items <= 100,
+      "[tasks] history_items must be 1-100",
   )
 
   memory = settings.memory
@@ -429,6 +465,7 @@ def load_settings(path=None):
           ConversationConfig, raw.get("conversation", {}), "conversation"
       ),
       tools=_build(ToolsConfig, raw.get("tools", {}), "tools"),
+      tasks=_build(TasksConfig, raw.get("tasks", {}), "tasks"),
       memory=_build(MemoryConfig, raw.get("memory", {}), "memory"),
       weather=_build(WeatherConfig, raw.get("weather", {}), "weather"),
       web=_build(WebConfig, raw.get("web", {}), "web"),

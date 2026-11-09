@@ -135,6 +135,23 @@ allowed_apps = ["notepad", "calc", "mspaint", "explorer", "msedge", "chrome", "c
 # Terminal commands JARVIS may run; arguments are validated, never shelled.
 allowed_commands = ["ipconfig", "whoami", "systeminfo", "tasklist", "hostname", "ping"]
 
+[tasks]
+# Durable multi-step plans with approval, checkpoints, retries and history.
+# Task tables share the conversation database.
+enabled = true
+db = "data/jarvis.db"
+# A plan may not exceed this many executable steps.
+max_steps = 50
+# Retries per step when the plan does not set its own value.
+max_retries = 1
+retry_delay_s = 0.2
+# Independent steps marked parallel run through this many workers.
+parallel_workers = 2
+# Destructive plans wait for /confirm before the first step runs.
+approval_required = true
+# Rows shown by /tasks history.
+history_items = 20
+
 [web]
 # Internet search and grounded answers. No API key is needed for DuckDuckGo.
 enabled = true

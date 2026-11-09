@@ -32,6 +32,8 @@ from core.memory import (
     MemoryStoreError,
     classify as classify_memory,
 )
+from core.timers import TimerError, TimerService
+from core.utilities import humanize_duration
 from tools import build_registry
 from tools.base import shorten
 from web.base import STOPWORDS, SearchError, words
@@ -137,12 +139,14 @@ FAILURE_REPLIES = {
     "other": "My language model returned an error, sir.",
 }
 
-HELP_TEXT = (    " Commands: /new starts a fresh conversation, /mode short|detailed|technical"
+HELP_TEXT = (
+    " Commands: /new starts a fresh conversation, /mode short|detailed|technical"
     " changes how much I say, /web TEXT answers from web sources, /history"
     " shows recent exchanges, /memory manages saved memories, /intent TEXT"
     " shows the detected intent as JSON, /tools lists computer tools, /confirm"
     " and /cancel handle pending actions, /forget deletes saved history after"
-    " confirmation, /help lists this."
+    " confirmation. Timers, reminders, conversions, weather and text tools work"
+    " directly. /help lists this."
 )
 
 def _normalize_sentence(text):
@@ -225,6 +229,9 @@ class Assistant:
     self._pending_tool = None
     self._pending_plan = None
     self._searcher = None
+    self._weather = None
+    self._timers = None
+    self._notifier = None
     self.registry = (
         build_registry(settings) if settings.tools.enabled else None
     )
@@ -324,7 +331,19 @@ class Assistant:
       self._record(text, answer)
     return answer
 
+  def set_notifier(self, callback):
+    """Route timer and reminder notifications through the interface."""
+    self._notifier = callback
+    if self._timers is not None:
+      self._timers.set_notifier(callback)
+
   def close(self):
+    if self._timers is not None:
+      self._timers.close()
+      self._timers = None
+    if self._weather is not None:
+      self._weather.close()
+      self._weather = None
     if self._searcher is not None:
       self._searcher.close()
       self._searcher = None
@@ -334,6 +353,32 @@ class Assistant:
     if self._memory is not None:
       self._memory.close()
       self._memory = None
+
+  # -- utilities, weather and timers ------------------------------------
+
+  def _get_weather(self):
+    """Build the weather client on first use so chatting stays light."""
+    if self._weather is None and self._settings.weather.enabled:
+      try:
+        from core.weather import WeatherClient
+
+        self._weather = WeatherClient(self._settings.weather)
+      except Exception as exc:  # a bad client must not break chatting
+        log.error("Weather unavailable: %s", exc)
+        return None
+    return self._weather
+
+  def _get_timers(self):
+    """Start the scheduler thread only when a timer is first requested."""
+    if self._timers is None:
+      try:
+        self._timers = TimerService(
+            self._settings.memory.resolved_db, notify=self._notifier
+        )
+      except TimerError as exc:
+        log.error("Timers unavailable: %s", exc)
+        return None
+    return self._timers
 
   # -- web search -------------------------------------------------------
 
@@ -557,7 +602,144 @@ class Assistant:
         "delete_memory",
     }:
       return self._memory_reply(intent)
+    if intent.name == "unit_convert":
+      return self._answer_conversion(intent)
+    if intent.name == "text_transform":
+      return self._answer_text(intent)
+    if intent.name == "format_size":
+      return f"That is {intent.entities.get('result')}."
+    if intent.name == "weather":
+      return self._answer_weather(intent)
+    if intent.name in {
+        "timer_set",
+        "reminder_set",
+        "timer_list",
+        "timer_cancel",
+    }:
+      return self._answer_timers(intent)
     return None
+
+  def _answer_conversion(self, intent):
+    if "error" in intent.entities:
+      return f"I can't convert that, sir: {intent.entities['error']}."
+    value = format_number(intent.entities.get("value", 0))
+    result = intent.entities.get("result")
+    unit = intent.entities.get("unit", "")
+    source = intent.entities.get("source", "")
+    return f"{value} {source} is {result} {unit}, sir."
+
+  def _answer_text(self, intent):
+    if "error" in intent.entities:
+      return f"I can't do that, sir: {intent.entities['error']}."
+    operation = intent.entities.get("operation", "")
+    result = intent.entities.get("result", "")
+    if operation in {"words", "characters", "chars", "letters"}:
+      noun = "words" if operation == "words" else "characters"
+      if result == "1":
+        noun = noun[:-1]
+      return f"The text has {result} {noun}, sir."
+    return result
+
+  def _answer_weather(self, intent):
+    from core.weather import WeatherError
+
+    if not self._settings.weather.enabled:
+      return "Weather is disabled, sir."
+    location = (
+        intent.entities.get("location")
+        or self._settings.weather.default_location
+    )
+    if not location:
+      return "Which place should I check the weather for, sir?"
+    weather = self._get_weather()
+    if weather is None:
+      return "Weather is unavailable, sir."
+    try:
+      data = weather.current(location)
+    except WeatherError as exc:
+      log.warning("Weather lookup failed for %r: %s", location, exc)
+      return f"I couldn't get the weather, sir: {exc}."
+    answer = (
+        f"In {data['place']}, it is {data['temperature']}"
+        f" {data['unit']} and {data['description']}."
+    )
+    details = []
+    if data.get("feels_like") is not None:
+      details.append(f"feels like {data['feels_like']} {data['unit']}")
+    if data.get("humidity") is not None:
+      details.append(f"humidity {data['humidity']}%")
+    if data.get("wind") is not None:
+      details.append(f"wind {data['wind']} {data['wind_unit']}")
+    if details:
+      answer += " It " + ", ".join(details) + "."
+    if data.get("high") is not None and data.get("low") is not None:
+      answer += (
+          f" Today's high is {data['high']} and the low is {data['low']}."
+      )
+    return answer
+
+  def _answer_timers(self, intent):
+    timers = self._get_timers()
+    if timers is None:
+      return "Timers are unavailable, sir."
+    if intent.name == "timer_set":
+      seconds = int(intent.entities.get("seconds", 0))
+      label = intent.entities.get("label", "")
+      try:
+        entry = timers.add_timer(seconds, label)
+      except TimerError as exc:
+        return f"I can't set that timer, sir: {exc}."
+      message = f"Timer set for {humanize_duration(seconds)}"
+      if entry.label:
+        message += f" ({entry.label})"
+      return message + ", sir."
+    if intent.name == "reminder_set":
+      try:
+        due = datetime.fromisoformat(intent.entities.get("due_at", ""))
+      except (TypeError, ValueError):
+        return "I couldn't understand when to remind you, sir."
+      try:
+        entry = timers.add_reminder(due, intent.entities.get("text", ""))
+      except TimerError as exc:
+        return f"I can't set that reminder, sir: {exc}."
+      return (
+          f"I'll remind you to {entry.label} at"
+          f" {entry.due_at.strftime('%H:%M')} on"
+          f" {entry.due_at.strftime('%A')}, sir."
+      )
+    if intent.name == "timer_list":
+      entries = timers.list()
+      if not entries:
+        return "You have no timers or reminders, sir."
+      lines = []
+      for entry in entries:
+        label = f" {entry.label}" if entry.label else ""
+        remaining = humanize_duration(entry.remaining_s)
+        lines.append(f"[{entry.id}] {entry.kind}{label} in {remaining}")
+      return "Pending:\n" + "\n".join(lines)
+    return self._cancel_timer(timers, intent)
+
+  def _cancel_timer(self, timers, intent):
+    kind = intent.entities.get("kind", "timer")
+    entries = [item for item in timers.list() if item.kind == kind]
+    plural = "" if kind.endswith("s") else "s"
+    if not entries:
+      return f"There are no {kind}{plural} to cancel, sir."
+    if intent.entities.get("all"):
+      for entry in entries:
+        timers.cancel(entry.id)
+      return f"Cancelled {len(entries)} {kind}{plural}, sir."
+    identifier = int(intent.entities.get("id") or 0)
+    if identifier:
+      target = next(
+          (item for item in entries if item.id == identifier), None
+      )
+      if target is None:
+        return f"I couldn't find that {kind}, sir."
+    else:
+      target = entries[0]
+    timers.cancel(target.id)
+    return f"Cancelled {kind} {target.id}, sir."
 
   def _answer_date(self, intent):
     iso = intent.entities.get("date")

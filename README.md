@@ -7,15 +7,16 @@ deterministic Python modules do the audio, routing and tool work.
 
 **Current status:** Phase 1 (stabilization) and feature sets **4.1 Voice
 Interface**, **4.2 Conversation Intelligence**, **4.3 Basic Intelligence**,
-**4.4 Computer Interaction**, **4.5 Internet Search** and **4.6 Basic
-Memory** complete. JARVIS listens through the microphone with push-to-talk,
-transcribes offline with Vosk, keeps multi-turn context across restarts,
-remembers explicitly saved preferences, facts, paths and folders, answers
-simple questions deterministically through Python, operates the computer
-through validated tools, searches the web and answers only from the fetched
-evidence with sources, falls back to the local model for everything else, and
-speaks through an interruptible Windows SAPI voice. Utilities follow in
-feature set 4.7 (see `PLANS-STACK-FEATURES.md`, `CHANGELOG.md`).
+**4.4 Computer Interaction**, **4.5 Internet Search**, **4.6 Basic Memory**
+and **4.7 Utilities** complete. JARVIS listens through the microphone with
+push-to-talk, transcribes offline with Vosk, keeps multi-turn context across
+restarts, remembers explicitly saved preferences, facts, paths and folders,
+answers simple questions deterministically through Python, operates the
+computer through validated tools, searches the web and answers only from the
+fetched evidence with sources, converts units and text, reports the weather,
+runs timers and persisted reminders, falls back to the local model for
+everything else, and speaks through an interruptible Windows SAPI voice.
+Feature set 4.8 is next (see `PLANS-STACK-FEATURES.md`, `CHANGELOG.md`).
 
 ## Requirements
 
@@ -61,6 +62,7 @@ All runtime settings live in `config/settings.toml`:
 | `[tools]` | File sandbox root, read/search limits, allowed applications and commands |
 | `[web]` | Search provider, result and query limits, page extraction, evidence budget, cache |
 | `[memory]` | Enable explicit memory, its SQLite file and how many memories reach the prompt |
+| `[weather]` | Weather flag, metric or imperial units, default location and timeout |
 
 Unknown keys are rejected so typos fail fast. Override the file location with
 `--config PATH` or the `JARVIS_CONFIG` environment variable.
@@ -203,6 +205,33 @@ db = "data/jarvis.db"
 inject_items = 6
 ```
 
+### Utilities, weather and timers
+
+Small everyday requests are handled by Python instead of the model, so they
+answer instantly and the same way every time.
+
+| Area | Examples |
+| --- | --- |
+| Unit conversion | `convert 10 km to miles`, `convert 25 celsius to fahrenheit`, `how many pounds in 5 kg` — length, mass, volume, speed, data, time and temperature |
+| Text | `uppercase hello world`, `title case the text ...`, `reverse ...`, `how many words in ...` |
+| File sizes | `how big is 1048576 bytes` — binary KB, MB, GB and TB |
+| Weather | `what's the weather in Kolkata`, `weather in London` — current conditions, feels-like, humidity, wind and today's high/low through Open-Meteo (no API key) |
+| Timers | `set a timer for 5 minutes`, `set a timer for 10 minutes named pasta`, `list timers`, `cancel timer 2` |
+| Reminders | `remind me in 20 minutes to stretch`, `remind me to call mom at 5 pm`, `remind me to submit the report tomorrow at 9` |
+
+Timers live for the session; reminders are written to `data/jarvis.db` and
+survive a restart. When one is due, JARVIS prints and speaks the notification
+through the same voice used for replies, and a reminder that came due while
+JARVIS was off is reported on the next start.
+
+```toml
+[weather]
+enabled = true
+units = "metric"      # or "imperial" for °F and mph
+default_location = ""  # used when the question names no city
+timeout_s = 10.0
+```
+
 ### Internet search
 
 Questions that need current information are routed to the search subsystem in
@@ -305,7 +334,9 @@ clarification, SQLite history/resume/deletion, intent routing, arithmetic and
 date parsing, JSON validation, tool argument validation, sandboxed file
 operations, app/command allowlists, confirmation flows, multi-step file plans,
 web search ranking, caching and grounded answers, explicit memory storage,
-search and prompt injection, Escape interruption, VAD segmentation,
+search and prompt injection, unit conversions, text and size formatting,
+Open-Meteo response parsing, timer polling and reminder persistence, Escape
+interruption, VAD segmentation,
 resampling, device resolution, speech text cleanup and SAPI rate mapping. The
 Vosk transcription test is skipped when the model is absent and desktop tools
 are only validated, never exercised, by the suite.
@@ -338,6 +369,9 @@ web/brave.py            Brave Search API provider
 web/extract.py          Page fetching (primp/httpx) and main-content extraction
 web/cache.py            Bounded SQLite search cache with stale fallback
 core/memory.py          Explicit memories, FTS5 search, temporary scope, usage
+core/utilities.py       Unit conversion, text, size, duration and reminder parsing
+core/timers.py          In-memory timers, persisted reminders and notifications
+core/weather.py         Open-Meteo geocoding and current conditions
 screenshots/            Screen captures (git-ignored)
 core/benchmark.py       RAM and latency baseline
 brain/llm_client.py     Persistent HTTPX client
@@ -387,6 +421,10 @@ logs/                   Runtime logs (git-ignored)
   profile with no per-project separation.
 - Frequent-usage counts cover apps, folders and URLs that went through the
   tools; a website opened in a browser by hand is not counted.
+- Unit conversion covers the built-in tables (length, mass, volume, speed,
+  data, time and temperature); unusual units fall back to the model. Weather
+  needs an internet connection and Open-Meteo availability. Timers fire only
+  while JARVIS is running; reminders catch up at the next start.
 - Summarization costs one extra model call once the transcript grows past
   `summarize_after`, which adds a few seconds on this CPU.
 - Speech recognition is English-only and limited by the small Vosk model:

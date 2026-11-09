@@ -123,6 +123,16 @@ class MemoryConfig:
 
 
 @dataclass(frozen=True)
+class WeatherConfig:
+  enabled: bool = True
+  # metric = °C and km/h, imperial = °F and mph.
+  units: str = "metric"
+  # Used when a question names no city; empty asks which city.
+  default_location: str = ""
+  timeout_s: float = 10.0
+
+
+@dataclass(frozen=True)
 class ToolsConfig:
   enabled: bool = True
   root: str = "."
@@ -189,6 +199,7 @@ class Settings:
   conversation: ConversationConfig
   tools: ToolsConfig
   memory: MemoryConfig
+  weather: WeatherConfig
   web: WebConfig
 
 
@@ -287,6 +298,16 @@ def _validate(settings):
       "[conversation] history_db must not be empty",
   )
 
+  weather = settings.weather
+  _require(
+      weather.units in {"metric", "imperial"},
+      "[weather] units must be metric or imperial",
+  )
+  _require(
+      2.0 <= weather.timeout_s <= 30.0,
+      "[weather] timeout_s must be 2-30",
+  )
+
   memory = settings.memory
   _require(bool(memory.db), "[memory] db must not be empty")
   _require(
@@ -382,6 +403,7 @@ def load_settings(path=None):
       ),
       tools=_build(ToolsConfig, raw.get("tools", {}), "tools"),
       memory=_build(MemoryConfig, raw.get("memory", {}), "memory"),
+      weather=_build(WeatherConfig, raw.get("weather", {}), "weather"),
       web=_build(WebConfig, raw.get("web", {}), "web"),
   )
   _validate(settings)

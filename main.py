@@ -84,6 +84,7 @@ def run(settings):
 
   speaker = build_speaker(settings)
   assistant = Assistant(settings)
+  assistant.set_notifier(lambda text: speak(text, speaker))
   try:
     if settings.voice.enabled:
       # Imported here so text-only sessions never load numpy/sounddevice/vosk.

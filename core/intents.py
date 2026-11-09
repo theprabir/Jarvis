@@ -17,6 +17,15 @@ from core.calculator import CalculationError, evaluate
 from core.dates import find_date_reference
 
 from core.memory import classify as classify_memory
+from core.utilities import (
+    UtilityError,
+    convert,
+    format_quantity,
+    format_size,
+    parse_duration,
+    parse_reminder,
+    transform_text,
+)
 
 CONFIDENCE_THRESHOLD = 0.7
 
@@ -76,6 +85,14 @@ CONVERSATION_INTENTS = frozenset(
         "search_memory",
         "list_memory",
         "delete_memory",
+        "unit_convert",
+        "text_transform",
+        "format_size",
+        "weather",
+        "timer_set",
+        "reminder_set",
+        "timer_list",
+        "timer_cancel",
         "history",
         "forget",
         "intent",
@@ -240,6 +257,187 @@ class Intent:
         entities=dict(entities),
         source=source,
     )
+
+
+_UNIT_CONVERT = re.compile(
+    r"^(?:convert|change)\s+(?P<value>-?\d+(?:\.\d+)?)\s*"
+    r"(?P<source>[a-z°]+)\s+(?:to|into)\s+(?P<target>[a-z°]+)$"
+)
+_UNIT_IN = re.compile(
+    r"^how many\s+(?P<target>[a-z]+)\s+(?:are\s+)?in\s+"
+    r"(?P<value>-?\d+(?:\.\d+)?)\s*(?P<source>[a-z°]+)$"
+)
+_TEXT_CONVERT = re.compile(
+    r"^convert\s+(?P<text>.+?)\s+to\s+"
+    r"(?P<operation>uppercase|lowercase|title case|reverse)$"
+)
+_TEXT_OP = re.compile(
+    r"^(?P<operation>uppercase|upper case|lowercase|lower case|"
+    r"title case|reverse|capitalize|capitalise)\s+"
+    r"(?:(?:the|this)\s+text\s+)?(?P<text>.+)$"
+)
+_TEXT_COUNT = re.compile(
+    r"^how many\s+(?P<operation>words|characters|chars|letters)\s+"
+    r"(?:are\s+)?in\s+(?P<text>.+)$"
+)
+_SIZE_FORMAT = re.compile(
+    r"^(?:format|show)\s+(?P<value>\d+(?:\.\d+)?)\s*"
+    r"(?P<unit>b|bytes?|kb|mb|gb|tb)\s+(?:as\s+)?"
+    r"(?:human[- ]readable|size)$"
+)
+_SIZE_HUMAN = re.compile(
+    r"^(?:what is|how big is|human readable)\s+"
+    r"(?P<value>\d+(?:\.\d+)?)\s*"
+    r"(?P<unit>b|bytes?|kb|mb|gb|tb)$"
+)
+_WEATHER = re.compile(
+    r"^(?:what(?:'s| is)|how(?:'s| is))\s+(?:the\s+)?weather"
+    r"(?:\s+(?:like|today|now))?"
+    r"(?:\s+(?:in|at|for)\s+(?P<place>.+))?$"
+)
+_WEATHER_ALT = re.compile(
+    r"^(?:weather|forecast)\s+(?:in|for|at)\s+(?P<place>.+)$"
+)
+_TIMER_LABEL = re.compile(
+    r"^(?:set\s+)?(?:a\s+)?timer\s+(?:for\s+)?(?P<duration>.+?)"
+    r"\s+(?:called|named)\s+(?P<label>.+)$"
+)
+_TIMER = re.compile(
+    r"^(?:set\s+)?(?:a\s+)?timer\s+(?:for\s+)?(?P<duration>.+)$"
+)
+_TIMER_LIST = re.compile(
+    r"^(?:list|show)\s+(?:my\s+)?(?:timers?|reminders?)$"
+    r"|^what\s+(?:timers?|reminders?)\s+(?:are\s+running|do\s+i\s+have)$"
+)
+_TIMER_CANCEL = re.compile(
+    r"^(?:cancel|stop|delete)\s+(?P<all>all\s+)?"
+    r"(?P<kind>timers?|reminders?)(?:\s+(?P<id>\d+))?$"
+)
+
+
+def recognize_utilities(text):
+  """Recognize conversions, text operations and size formatting."""
+  lowered = (text or "").lower().strip().rstrip("?.!")
+  if not lowered:
+    return None
+  match = _UNIT_CONVERT.match(lowered) or _UNIT_IN.match(lowered)
+  if match:
+    value = float(match.group("value"))
+    source = match.group("source")
+    target = match.group("target")
+    try:
+      result, unit = convert(value, source, target)
+    except UtilityError as exc:
+      return Intent(
+          "unit_convert",
+          0.9,
+          {
+              "value": value,
+              "source": source,
+              "target": target,
+              "error": str(exc),
+          },
+      )
+    return Intent(
+        "unit_convert",
+        0.92,
+        {
+            "value": value,
+            "source": source,
+            "target": target,
+            "result": format_quantity(result),
+            "unit": unit,
+        },
+    )
+  match = _TEXT_CONVERT.match(lowered) or _TEXT_OP.match(lowered)
+  if match:
+    return _text_intent(match.group("operation"), match.group("text"))
+  match = _TEXT_COUNT.match(lowered)
+  if match:
+    return _text_intent(match.group("operation"), match.group("text"))
+  match = _SIZE_FORMAT.match(lowered) or _SIZE_HUMAN.match(lowered)
+  if match:
+    return Intent(
+        "format_size",
+        0.92,
+        {"result": format_size(match.group("value"), match.group("unit"))},
+    )
+  return None
+
+
+def _text_intent(operation, body):
+  value = str(body or "").strip().strip('"').strip("'")
+  try:
+    result = transform_text(operation, value)
+  except UtilityError as exc:
+    return Intent(
+        "text_transform",
+        0.9,
+        {"operation": operation, "text": value, "error": str(exc)},
+    )
+  return Intent(
+      "text_transform",
+      0.92,
+      {"operation": operation, "text": value, "result": result},
+  )
+
+
+def recognize_weather(text):
+  lowered = (text or "").lower().strip().rstrip("?.!")
+  if not lowered:
+    return None
+  match = _WEATHER.match(lowered) or _WEATHER_ALT.match(lowered)
+  if not match:
+    return None
+  place = _clean(match.group("place") or "")
+  return Intent("weather", 0.9, {"location": place})
+
+
+def recognize_timers(text):
+  """Recognize timers and reminders, including their absolute due time."""
+  lowered = (text or "").lower().strip().rstrip("?.!")
+  if not lowered:
+    return None
+  if lowered.startswith("remind me"):
+    parsed = parse_reminder(lowered)
+    if parsed:
+      due, task = parsed
+      return Intent(
+          "reminder_set",
+          0.9,
+          {
+              "due_at": due.isoformat(timespec="minutes"),
+              "text": task,
+          },
+      )
+    return None
+  if _TIMER_LIST.match(lowered):
+    return Intent("timer_list", 0.9, {})
+  match = _TIMER_CANCEL.match(lowered)
+  if match:
+    return Intent(
+        "timer_cancel",
+        0.9,
+        {
+            "kind": match.group("kind").rstrip("s"),
+            "id": int(match.group("id")) if match.group("id") else 0,
+            "all": bool(match.group("all")),
+        },
+    )
+  match = _TIMER_LABEL.match(lowered) or _TIMER.match(lowered)
+  if match:
+    seconds = parse_duration(match.group("duration"))
+    if not seconds:
+      return None
+    return Intent(
+        "timer_set",
+        0.92,
+        {
+            "seconds": seconds,
+            "label": _clean(match.groupdict().get("label") or ""),
+        },
+    )
+  return None
 
 
 def recognize_time(text):
@@ -904,6 +1102,14 @@ class IntentRouter:
     intent = recognize_memory(text)
     if intent is not None:
       return intent
+    for recognizer in (
+        recognize_utilities,
+        recognize_weather,
+        recognize_timers,
+    ):
+      intent = recognizer(text)
+      if intent is not None:
+        return intent
     for recognizer in (recognize_time, recognize_date, recognize_math):
       intent = recognizer(text)
       if intent is not None:

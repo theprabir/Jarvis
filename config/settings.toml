@@ -91,6 +91,15 @@ resume_last_session = true
 # SQLite file for persisted exchanges (git-ignored).
 history_db = "data/jarvis.db"
 
+[weather]
+# Current conditions and today's range through Open-Meteo (no API key).
+enabled = true
+# metric = Celsius and km/h, imperial = Fahrenheit and mph.
+units = "metric"
+# Used when a question names no city; empty asks which city instead.
+default_location = ""
+timeout_s = 10.0
+
 [memory]
 # Explicit memories: only what you ask JARVIS to remember is stored, never
 # the conversation itself. Tables live in the history database below.

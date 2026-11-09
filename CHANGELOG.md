@@ -4,6 +4,63 @@ All notable changes to JARVIS are recorded here. Versions follow the project
 convention: each completed feature set increments the patch number; completing
 all feature sets in a phase increments the middle number and resets the patch.
 
+## v0.1.11 — 2026-11-09
+
+**Utilities (feature set 4.7)**
+
+### Implemented functionality
+
+- **Unit conversion** — `convert 10 km to miles`, `convert 25 celsius to
+  fahrenheit`, `convert 500 mb to gb` and `how many pounds in 5 kg` cover
+  length, mass, volume, speed, data sizes, time and temperatures in both
+  directions (including metric/imperial aliases and plurals).
+- **Text utilities** — `uppercase hello world`, `lowercase ...`, `title case
+  ...`, `reverse ...`, `capitalize ...`, and `how many words|characters|letters
+  in ...` operate on Python strings without a model call.
+- **File-size formatting** — `how big is 1048576 bytes` and `format 2 gb as
+  human readable` print binary units (B, KB, MB, GB, TB).
+- **Weather** — `what's the weather in Kolkata` and `weather in London`
+  geocode the place and fetch current conditions plus today's high/low from
+  Open-Meteo, which needs no API key. `[weather]` adds `enabled`, `units`
+  (`metric`/`imperial`), `default_location` and `timeout_s`. The client is
+  created on first use and closed on shutdown.
+- **Timers** — `set a timer for 5 minutes`, an optional `named` label, `list
+  timers` and `cancel timer ID|all`. A daemon thread checks due entries every
+  500 ms; notifications are printed and spoken through the same interface
+  voice.
+- **Reminders** — `remind me in 20 minutes to stretch`, `remind me to call
+  mom at 5 pm` and `remind me to submit the report tomorrow at 9`. Reminders
+  are stored in the `reminders` table of `data/jarvis.db`, reloaded after a
+  restart, and a reminder that expired while JARVIS was off is reported at
+  the next start.
+- **Configuration and wiring** — the new intents (`unit_convert`,
+  `text_transform`, `format_size`, `weather`, `timer_set`, `reminder_set`,
+  `timer_list`, `timer_cancel`) route after memory and before time/date/math,
+  with `/help` updated and `main.py` registering the spoken notifier.
+
+### Files created or modified
+
+New `core/utilities.py`, `core/timers.py`, `core/weather.py` and
+`tests/test_utilities.py`. Modified `core/config.py` (`WeatherConfig`,
+`Settings.weather`, validation and loading), `config/settings.toml`
+(`[weather]`), `core/intents.py` (recognizers, intent names, routing),
+`core/assistant.py` (utility/weather/timer replies, lazy clients, notifier,
+lifecycle), `main.py`, `README.md`, `CHANGELOG.md`.
+
+### Bug fixes found while verifying
+
+- `format_size` mixed decimal conversion factors with binary output, so
+  `format 2 gb as human readable` returned `1.863 GB`. It now uses binary
+  byte factors and returns `2 GB`.
+
+### Testing status
+
+All tests pass offline with `.venv\Scripts\python -m unittest discover -s
+ tests`: 290 tests, including the new conversion, text, size, duration,
+reminder, weather, timer, notifier and assistant-reply cases. Live Open-Meteo
+responses were probed successfully during development; the suite itself uses
+recorded payloads.
+
 ## v0.1.10 — 2026-11-09
 
 **Basic memory (feature set 4.6)**

@@ -26,6 +26,16 @@ def read_document(service, path):
   )
   if preview:
     text += f" It starts: {preview}"
+  metadata = document.metadata
+  if metadata.get("ocr_confidence") is not None:
+    text += (
+        f" OCR confidence: {round(float(metadata['ocr_confidence']) * 100)}%"
+        f" ({metadata.get('ocr_level', 'unknown')}; local estimate)."
+    )
+  if metadata.get("ocr_partial_pages") or metadata.get("ocr_partial"):
+    text += " OCR warning: recognition may be incomplete; verify the scan."
+  if metadata.get("ocr_truncated"):
+    text += " OCR was limited by the ocr_max_pages setting."
   return ToolResult(
       True,
       text,
@@ -45,11 +55,14 @@ def index_document(service, path):
     result = service.index(path)
   except DocumentError as exc:
     _fail(exc)
-  return ToolResult(
-      True,
-      f"Indexed {result['title']} into {result['chunks']} searchable passages.",
-      result,
-  )
+  text = f"Indexed {result['title']} into {result['chunks']} searchable passages."
+  if result.get("ocr_partial_pages") or result.get("ocr_partial"):
+    text += " OCR warning: recognition may be incomplete."
+  elif result.get("ocr_confidence") is not None:
+    text += (
+        f" OCR confidence: {round(float(result['ocr_confidence']) * 100)}%."
+    )
+  return ToolResult(True, text, result)
 
 
 def index_folder(service, path=".", recursive=True):
@@ -63,6 +76,8 @@ def index_folder(service, path=".", recursive=True):
   )
   if result["errors"]:
     text += " First problem: " + result["errors"][0]
+  if result.get("ocr_warnings"):
+    text += " OCR warning: " + result["ocr_warnings"][0]
   return ToolResult(True, text, result)
 
 

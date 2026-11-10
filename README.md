@@ -7,7 +7,8 @@ deterministic Python modules do the audio, routing and tool work.
 
 **Current status:** Phase 1 (stabilization) and feature sets **4.1 Voice
 Interface** through **4.10 Document Intelligence** complete, plus optional
-document OCR, released as **v0.2.4** in the moderate-advanced feature line.
+document OCR with confidence warnings, released as **v0.2.5** in the
+moderate-advanced feature line.
 JARVIS listens through the
 microphone with push-to-talk, transcribes offline with Vosk, keeps multi-turn
 context across restarts, remembers explicitly saved preferences, facts, paths
@@ -256,10 +257,17 @@ images. There is no vector database and no embedding model in this feature
 set. Only the retrieved passages, not a whole document, are sent to the local
 model for question answering or explanation.
 
+Windows OCR does not expose a native confidence score. JARVIS therefore shows
+a clearly labeled **local estimate** based on how much text was recognized,
+how much of the page its word boxes cover, and how clean the tokens are. A
+`fair` or `partial` result, or an OCR error on a page, produces a warning in
+`/documents read` and in index results; the original image is never modified.
+
 | Capability | Behaviour |
 | --- | --- |
 | Read | Text and tables from PDF, DOCX, TXT, Markdown, CSV and XLSX; `[Page N]` markers remain in PDF text |
 | OCR | Scanned PDF pages and image files when `ocr_enabled` is on; PDF pages are rendered at `ocr_dpi`, and only pages with fewer than `ocr_min_chars` characters are OCRed |
+| OCR confidence | A local quality estimate from recognized text volume, page coverage and token cleanliness; low-confidence pages and images are flagged for review |
 | Index | One file or a whole folder, including OCRable images when enabled; unchanged files are skipped on a second scan; hidden, model, cache and virtual-environment folders are ignored |
 | Search | FTS5 keyword retrieval over overlapping passages, with document title, path and passage number |
 | Ask | The model answers only from the retrieved passages and must cite them; when no passage matches, JARVIS says so instead of guessing |
@@ -532,8 +540,9 @@ dynamic replanning, parallel and background execution, cancellation,
 resumption, verification and folder organization, PDF/DOCX/TXT/Markdown/CSV/
 XLSX extraction and tables, document chunking, FTS5 search and scan fallback,
 folder indexing and unchanged-file skipping, OCR of images and image-only
-PDFs, OCR disabling, summaries, dates, action items, comparison, conversion,
-report and document generation, document commands and tool confirmations, unit conversions, text and size formatting,
+PDFs, OCR confidence estimates and partial-recognition warnings, OCR
+disabling, summaries, dates, action items, comparison, conversion, report and
+document generation, document commands and tool confirmations, unit conversions, text and size formatting,
 Open-Meteo response parsing, timer polling and reminder persistence, Escape
 interruption, VAD segmentation,
 resampling, device resolution, speech text cleanup and SAPI rate mapping. The
@@ -615,8 +624,10 @@ logs/                   Runtime logs (git-ignored)
 - OCR is optional and uses the built-in Windows OCR engine, so it needs
   Windows and the matching OCR language pack. It reads scanned PDF pages up to
   `ocr_max_pages` and image files; low-resolution, rotated or unusual-font
-  scans may be inaccurate. Charts, photos, embedded Office objects and images
-  inside DOCX/XLSX are not described, and OCR does not preserve tables.
+  scans may be inaccurate. The reported confidence is a local heuristic, not
+  a probability from the Windows engine; treat `fair` or `partial` results as
+  a prompt to verify the scan. Charts, photos, embedded Office objects and
+  images inside DOCX/XLSX are not described, and OCR does not preserve tables.
   PDF generation is text-only with Helvetica and Latin-1 characters; complex
   layout, fonts and non-Latin scripts are not reproduced. Document search is
   lexical FTS5 with no embeddings, so a question that uses different words

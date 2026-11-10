@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 from core.assistant import Assistant
 from core.config import load_settings
@@ -192,10 +193,42 @@ class ExtractionTests(DocumentFixture):
     self.assertIn("JARVIS", pdf_document.text)
     self.assertIn("1200", pdf_document.text)
     self.assertEqual(pdf_document.metadata["ocr_pages"], 1)
-    self.service.index(str(pdf))
+    self.assertGreaterEqual(pdf_document.metadata["ocr_confidence"], 0.0)
+    self.assertEqual(
+        pdf_document.metadata["ocr_page_details"][0]["page"], 1
+    )
+    indexed = self.service.index(str(pdf))
+    self.assertIsNotNone(indexed["ocr_confidence"])
     self.assertTrue(
         any("Budget" in hit["text"] for hit in self.service.search("Budget"))
     )
+
+  @unittest.skipUnless(sys.platform == "win32", "Windows OCR is required")
+  def test_ocr_reports_low_confidence_and_partial_warning(self):
+    image = self.make_scan("low-confidence.png")
+    with mock.patch(
+        "winocr.recognize_pil_sync",
+        return_value={"text": "X", "lines": []},
+    ):
+      document = self.service.read(str(image))
+    self.assertLess(document.metadata["ocr_confidence"], 0.6)
+    self.assertIn(document.metadata["ocr_level"], {"partial", "fair"})
+    self.assertTrue(document.metadata["ocr_partial"])
+    self.assertTrue(document.metadata["ocr_warnings"])
+
+    from PIL import Image
+
+    pdf = self.docs / "low-confidence.pdf"
+    with Image.open(str(image)) as scan:
+      scan.save(str(pdf), "PDF", resolution=200)
+    with mock.patch(
+        "winocr.recognize_pil_sync",
+        return_value={"text": "X", "lines": []},
+    ):
+      pdf_document = self.service.read(str(pdf))
+    self.assertLess(pdf_document.metadata["ocr_confidence"], 0.6)
+    self.assertEqual(pdf_document.metadata["ocr_partial_pages"], [1])
+    self.assertTrue(pdf_document.metadata["ocr_warnings"])
 
   def test_image_ocr_can_be_disabled(self):
     image = self.make_scan("disabled.png")
@@ -485,6 +518,25 @@ class AssistantDocumentTests(DocumentFixture):
     self.service.index("Documents/one.md")
     removed = assistant.reply("/documents remove Documents/one.md")
     self.assertIn("Removed", removed)
+
+  @unittest.skipUnless(sys.platform == "win32", "Windows OCR is required")
+  def test_read_command_reports_partial_ocr(self):
+    image = self.make_scan("assistant-scan.png")
+    pdf = self.docs / "assistant-scan.pdf"
+    from PIL import Image
+
+    with Image.open(str(image)) as scan:
+      scan.save(str(pdf), "PDF", resolution=200)
+    assistant, _client = self.make_assistant()
+    with mock.patch(
+        "winocr.recognize_pil_sync",
+        return_value={"text": "X", "lines": []},
+    ):
+      answer = assistant.reply(f"/documents read {pdf}")
+    self.assertIn("OCR confidence", answer)
+    self.assertIn("Warning", answer)
+    self.assertIn("partially recognized", answer)
+    self.assertIn("page(s) 1", answer)
 
   def test_document_commands_enforce_the_sandbox(self):
     outside = Path(self.tmp.name) / "outside.md"

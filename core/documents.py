@@ -308,6 +308,91 @@ def _ocr_text(result):
   return str(getattr(result, "text", "") or "").strip()
 
 
+def _rect_value(rect, name):
+  if isinstance(rect, dict):
+    return float(rect.get(name) or 0)
+  return float(getattr(rect, name, 0) or 0)
+
+
+def _ocr_word_rects(result):
+  """Yield word boxes from both winocr result shapes when available."""
+  if isinstance(result, dict):
+    lines = result.get("lines") or []
+    for line in lines:
+      if not isinstance(line, dict):
+        continue
+      for word in line.get("words") or []:
+        if isinstance(word, dict):
+          rect = word.get("bounding_rect") or {}
+          yield _rect_value(rect, "width"), _rect_value(rect, "height")
+    return
+  for line in getattr(result, "lines", []) or []:
+    for word in getattr(line, "words", []) or []:
+      rect = getattr(word, "bounding_rect", None)
+      if rect is not None:
+        yield _rect_value(rect, "width"), _rect_value(rect, "height")
+
+
+def _ocr_quality(result, width, height):
+  """Estimate OCR quality locally; Windows OCR exposes no confidence score."""
+  text = _ocr_text(result)
+  compact = re.sub(r"\s+", "", text)
+  words = re.findall(r"\S+", text)
+  area = max(1, int(width) * int(height))
+  covered = sum(max(0.0, w) * max(0.0, h) for w, h in _ocr_word_rects(result))
+  coverage = min(1.0, covered / area)
+  garbage = len(
+      re.findall(r"[^\w\s.,;:!?()/%$€£+\-]", text, re.UNICODE)
+  )
+  garbage_ratio = garbage / max(1, len(compact))
+  short_ratio = (
+      sum(1 for word in words if len(word) <= 2) / len(words)
+      if words
+      else 0.0
+  )
+  volume = min(1.0, len(compact) / 80)
+  coverage_score = min(1.0, coverage / 0.08)
+  cleanliness = max(0.0, 1.0 - garbage_ratio * 4)
+  short_penalty = min(1.0, short_ratio * 0.8)
+  confidence = (
+      0.40
+      + 0.22 * volume
+      + 0.22 * coverage_score
+      + 0.16 * cleanliness
+      - 0.18 * short_penalty
+  )
+  confidence = round(max(0.0, min(1.0, confidence)), 3)
+  reasons = []
+  if not text.strip():
+    level = "none"
+    confidence = 0.0
+    reasons.append("no text was recognized")
+  else:
+    if len(compact) < 12:
+      level = "partial"
+      reasons.append("very little text was recognized")
+    elif confidence < 0.58 or len(compact) < 35:
+      level = "fair"
+      reasons.append("only a limited amount of text was recognized")
+    else:
+      level = "good"
+    if coverage < 0.01:
+      reasons.append("recognized text covers little of the page")
+    if garbage_ratio > 0.12:
+      reasons.append("unusual characters were recognized")
+    if short_ratio > 0.6 and len(words) >= 3:
+      reasons.append("many very short tokens were recognized")
+  return {
+      "text": text,
+      "confidence": confidence,
+      "level": level,
+      "chars": len(compact),
+      "words": len(words),
+      "coverage": round(coverage, 4),
+      "reasons": reasons,
+  }
+
+
 def _ocr_pil(image, config):
   """Run the local Windows OCR engine on one already-open image."""
   try:
@@ -323,10 +408,12 @@ def _ocr_pil(image, config):
   converted = None
   if image.mode not in {"RGB", "L"}:
     converted = image = image.convert("RGB")
+  quality = None
   try:
     result = winocr.recognize_pil_sync(
         image, getattr(config, "ocr_language", "en-US")
     )
+    quality = _ocr_quality(result, image.width, image.height)
   except Exception as exc:
     raise DocumentError(
         f"Windows OCR failed ({exc}); check the [documents] ocr_language"
@@ -335,7 +422,7 @@ def _ocr_pil(image, config):
   finally:
     if converted is not None:
       converted.close()
-  return _ocr_text(result)
+  return quality
 
 
 def _ocr_pdf_pages(path, config, page_numbers):
@@ -361,9 +448,7 @@ def _ocr_pdf_pages(path, config, page_numbers):
         page = pdf[page_number - 1]
         bitmap = page.render(scale=float(config.ocr_dpi) / 72.0)
         image = bitmap.to_pil()
-        text = _ocr_pil(image, config)
-        if text:
-          results[page_number] = text
+        results[page_number] = _ocr_pil(image, config)
       except Exception as exc:
         log.warning("OCR failed for %s page %s: %s", path.name, page_number, exc)
         errors.append(str(exc))
@@ -408,20 +493,64 @@ def _read_pdf(path, config):
     ]
     if ocr_pages:
       try:
-        ocr_text, errors = _ocr_pdf_pages(path, config, ocr_pages)
+        ocr_results, errors = _ocr_pdf_pages(path, config, ocr_pages)
       except DocumentError as exc:
-        ocr_text, errors = {}, [str(exc)]
-      for page_number, text in ocr_text.items():
+        ocr_results, errors = {}, [str(exc)]
+      details = []
+      for page_number, result in ocr_results.items():
+        text = result.get("text", "")
         original = page_texts[page_number - 1]
         page_texts[page_number - 1] = (
             (original + "\n" + text).strip() if original else text
         )
-      metadata["ocr_pages"] = len(ocr_text)
+        details.append(
+            {
+                "page": page_number,
+                "confidence": result.get("confidence", 0.0),
+                "level": result.get("level", "none"),
+                "chars": result.get("chars", 0),
+                "words": result.get("words", 0),
+                "coverage": result.get("coverage", 0.0),
+                "reasons": result.get("reasons", []),
+            }
+        )
+      metadata["ocr_pages"] = len(ocr_results)
       metadata["ocr_truncated"] = len(ocr_pages) > config.ocr_max_pages
-      if errors and not ocr_text:
+      if details:
+        details.sort(key=lambda item: item["page"])
+        metadata["ocr_page_details"] = details
+        metadata["ocr_confidence"] = round(
+            sum(item["confidence"] for item in details) / len(details), 3
+        )
+        partial = [
+            item["page"]
+            for item in details
+            if item["level"] in {"none", "partial", "fair"}
+        ]
+        if partial:
+          metadata["ocr_partial_pages"] = partial
+        metadata["ocr_level"] = (
+            "partial"
+            if any(item["level"] in {"none", "partial"} for item in details)
+            else "fair"
+            if any(item["level"] == "fair" for item in details)
+            else "good"
+        )
+        warnings = []
+        for item in details:
+          for reason in item["reasons"]:
+            label = f"page {item['page']}: {reason}"
+            if label not in warnings:
+              warnings.append(label)
+        if warnings:
+          metadata["ocr_warnings"] = warnings[:8]
+      if errors and not ocr_results:
         ocr_error = errors[0]
       elif errors:
         metadata["ocr_errors"] = errors[:3]
+        warnings = metadata.get("ocr_warnings", [])
+        warnings.extend(f"OCR error: {error}" for error in errors[:2])
+        metadata["ocr_warnings"] = warnings[:8]
   pages = [
       f"[Page {index}]\n{text}"
       for index, text in enumerate(page_texts, 1)
@@ -465,20 +594,32 @@ def _read_image(path, config):
             f"that image is too large for OCR ({image.width}x{image.height})"
         )
       image.load()
-      text = _ocr_pil(image, config)
+      quality = _ocr_pil(image, config)
   except DocumentError:
     raise
   except Exception as exc:
     raise DocumentError(f"I could not read the image {path.name}: {exc}") from exc
+  text = quality.get("text", "")
   if not text:
     raise DocumentError(f"I found no text in the image {path.name}")
+  metadata = {
+      "ocr": True,
+      "pages": 1,
+      "ocr_confidence": quality["confidence"],
+      "ocr_level": quality["level"],
+      "ocr_chars": quality["chars"],
+      "ocr_words": quality["words"],
+      "ocr_warnings": quality["reasons"],
+  }
+  if quality["level"] != "good":
+    metadata["ocr_partial"] = True
   return Document(
       path=path,
       title=path.stem,
       format=path.suffix.lstrip(".").upper(),
       text=text,
       paragraphs=text,
-      metadata={"ocr": True, "pages": 1},
+      metadata=metadata,
   )
 
 
@@ -1093,6 +1234,11 @@ class DocumentService:
         "chars": document.chars,
         "chunks": len(chunks),
         "tables": len(document.tables),
+        "ocr_confidence": document.metadata.get("ocr_confidence"),
+        "ocr_level": document.metadata.get("ocr_level"),
+        "ocr_partial_pages": document.metadata.get("ocr_partial_pages", []),
+        "ocr_partial": document.metadata.get("ocr_partial", False),
+        "ocr_warnings": document.metadata.get("ocr_warnings", []),
     }
 
   def index_folder(self, path, recursive=True):
@@ -1109,6 +1255,7 @@ class DocumentService:
         "skipped": 0,
         "failed": 0,
         "errors": [],
+        "ocr_warnings": [],
     }
     for file in files:
       try:
@@ -1116,7 +1263,14 @@ class DocumentService:
         if self._store.is_current(file, stat.st_size, stat.st_mtime):
           result["skipped"] += 1
           continue
-        self.index(str(file))
+        indexed = self.index(str(file))
+        partial = indexed.get("ocr_partial_pages") or []
+        if indexed.get("ocr_partial") or partial:
+          if len(result["ocr_warnings"]) < 5:
+            detail = f"{file.name}: OCR may be incomplete"
+            if partial:
+              detail += " on page(s) " + ", ".join(str(p) for p in partial[:8])
+            result["ocr_warnings"].append(detail)
         result["indexed"] += 1
       except (OSError, DocumentError) as exc:
         result["failed"] += 1

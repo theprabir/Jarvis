@@ -1245,15 +1245,32 @@ class Assistant:
     self._remember_document(service, document)
     text = document.text.strip()
     limit = 5000
-    suffix = ""
-    if document.metadata.get("ocr"):
-      suffix = "\n\n[Read using local OCR.]"
-    elif document.metadata.get("ocr_pages"):
-      suffix = (
-          f"\n\n[Read {document.metadata['ocr_pages']} page(s) using local OCR.]"
+    notes = []
+    metadata = document.metadata
+    confidence = metadata.get("ocr_confidence")
+    if confidence is not None:
+      level = metadata.get("ocr_level", "unknown")
+      notes.append(
+          f"OCR confidence: {round(float(confidence) * 100)}%"
+          f" ({level}; local estimate)."
       )
-    if document.metadata.get("ocr_truncated"):
-      suffix += "\n\n[OCR was limited by [documents] ocr_max_pages.]"
+    partial_pages = metadata.get("ocr_partial_pages") or []
+    if partial_pages:
+      pages = ", ".join(str(page) for page in partial_pages[:8])
+      notes.append(
+          f"Warning: page(s) {pages} may be only partially recognized;"
+          " verify the scan."
+      )
+    elif metadata.get("ocr_partial"):
+      notes.append(
+          "Warning: the image may be only partially recognized;"
+          " verify the scan."
+      )
+    if metadata.get("ocr_truncated"):
+      notes.append("OCR was limited by the ocr_max_pages setting.")
+    for warning in metadata.get("ocr_warnings", [])[:3]:
+      notes.append(f"OCR warning: {warning}.")
+    suffix = "".join(f"\n\n[{note}]" for note in notes)
     if len(text) > limit:
       suffix += (
           f"\n\n[Showing {limit} of {len(text)} characters. Use"
@@ -1275,14 +1292,23 @@ class Assistant:
         )
         if result["errors"]:
           message += " First problem: " + result["errors"][0]
+        if result.get("ocr_warnings"):
+          message += " OCR warning: " + result["ocr_warnings"][0]
         return message
       result = service.index(path)
     except DocumentError as exc:
       return f"I couldn't index that, sir: {exc}."
-    return (
+    message = (
         f"Indexed {result['title']} into {result['chunks']} searchable"
         " passage(s)."
     )
+    if result.get("ocr_partial_pages") or result.get("ocr_partial"):
+      message += " OCR warning: recognition may be incomplete."
+    elif result.get("ocr_confidence") is not None:
+      message += (
+          f" OCR confidence: {round(float(result['ocr_confidence']) * 100)}%."
+      )
+    return message
 
   def _document_search(self, service, intent):
     query = str(intent.entities.get("query") or "").strip()

@@ -7,6 +7,53 @@ all feature sets in a phase increments the middle number and resets the patch.
 feature sets in this level increment the patch (v0.2.1, …), and completing the
 level increments the middle number.
 
+## v0.2.5 — 2026-11-10
+
+**OCR confidence and partial-recognition warnings**
+
+### Implemented functionality
+
+- **Local confidence estimate** — every OCRed image and scanned PDF page now
+  gets a 0–100% quality estimate from recognized character volume, word-box
+  page coverage and token cleanliness. Windows OCR does not expose a native
+  confidence value, so this is explicitly labeled a local heuristic.
+- **Page-level metadata** — scanned PDFs expose `ocr_confidence`,
+  `ocr_level`, `ocr_page_details`, `ocr_partial_pages`, `ocr_warnings` and
+  `ocr_errors`; images expose the same confidence/level/warning fields with
+  `ocr_partial`.
+- **Clear warnings** — `/documents read` shows the estimate and a warning when
+  a page or image is `fair`, `partial` or empty, or when OCR fails on a page.
+  Document read/index tools and single-file index results carry the same
+  warning. Folder indexing collects the first affected files.
+- **No false certainty** — low text volume, little page coverage, unusual
+  characters and many short tokens lower the estimate; the reasons are
+  returned as warnings instead of silently treating poor OCR as reliable text.
+
+### Files
+
+- `core/documents.py` — OCR quality scoring, word-box coverage, page details,
+  image confidence metadata and warning aggregation.
+- `core/assistant.py` — confidence and partial-recognition notices in document
+  read and index replies.
+- `tools/documents.py` — confidence and warning text in document read/index
+  tool results.
+- `tests/test_documents.py` — confidence metadata assertions, mocked
+  low-confidence OCR and assistant warning coverage.
+- `README.md`, `CHANGELOG.md` — confidence semantics, warnings and version.
+
+### Bug fixes
+
+- None in this enhancement.
+
+### Testing
+
+- `python -m compileall -q core tools config tests main.py` passed.
+- `python -m unittest discover -s tests` passed: **377 tests**.
+- OCR confidence and warning tests run offline against generated images and
+  mocked OCR output; the real Windows OCR smoke test remains covered. A
+  rotated, slightly blurred real image returned 72% (`fair`) with a
+  limited-text warning, confirming the heuristic flags degraded recognition.
+
 ## v0.2.4 — 2026-11-10
 
 **Optional OCR for scanned documents**

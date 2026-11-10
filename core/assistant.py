@@ -1246,8 +1246,16 @@ class Assistant:
     text = document.text.strip()
     limit = 5000
     suffix = ""
-    if len(text) > limit:
+    if document.metadata.get("ocr"):
+      suffix = "\n\n[Read using local OCR.]"
+    elif document.metadata.get("ocr_pages"):
       suffix = (
+          f"\n\n[Read {document.metadata['ocr_pages']} page(s) using local OCR.]"
+      )
+    if document.metadata.get("ocr_truncated"):
+      suffix += "\n\n[OCR was limited by [documents] ocr_max_pages.]"
+    if len(text) > limit:
+      suffix += (
           f"\n\n[Showing {limit} of {len(text)} characters. Use"
           " /documents summarize for a shorter version.]"
       )

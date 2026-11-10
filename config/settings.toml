@@ -175,6 +175,15 @@ context_chars = 4000
 # Folder indexing limits.
 max_files = 500
 max_chunks = 20000
+# Optional OCR for scanned PDF pages and image files (PNG, JPG, BMP, TIFF,
+# WebP). Windows OCR runs locally and needs the matching Windows language
+# pack. Pages are rendered at ocr_dpi; pages below ocr_min_chars are OCRed.
+ocr_enabled = true
+ocr_language = "en-US"
+ocr_dpi = 200
+ocr_min_chars = 40
+# Bound OCR work per PDF. Additional scanned pages are skipped.
+ocr_max_pages = 20
 
 [web]
 # Internet search and grounded answers. No API key is needed for DuckDuckGo.

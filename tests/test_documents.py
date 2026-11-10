@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -86,6 +87,21 @@ class DocumentFixture(unittest.TestCase):
     document.save(str(path))
     return path
 
+  def make_scan(self, name="scan.png"):
+    from PIL import Image, ImageDraw, ImageFont
+
+    try:
+      font = ImageFont.truetype("C:/Windows/Fonts/arialbd.ttf", 64)
+    except OSError:
+      self.skipTest("Arial Bold is required for the OCR fixture")
+    image = Image.new("RGB", (1400, 360), "white")
+    draw = ImageDraw.Draw(image)
+    draw.text((60, 70), "JARVIS OCR TEST", font=font, fill="black")
+    draw.text((60, 180), "Budget total 1200 dollars", font=font, fill="black")
+    path = self.docs / name
+    image.save(str(path))
+    return path
+
   def make_xlsx(self, name="budget.xlsx"):
     from openpyxl import Workbook
 
@@ -155,6 +171,37 @@ class ExtractionTests(DocumentFixture):
     self.assertIn("Generated Report", document.text)
     self.assertIn("two paragraphs", document.text)
     self.assertIn("[Page 1]", document.text)
+
+  @unittest.skipUnless(sys.platform == "win32", "Windows OCR is required")
+  def test_scanned_pdf_and_image_use_ocr(self):
+    image = self.make_scan("scan.png")
+    image_document = self.service.read(str(image))
+    self.assertEqual(image_document.format, "PNG")
+    self.assertTrue(image_document.metadata["ocr"])
+    self.assertIn("JARVIS", image_document.text)
+    self.assertIn("1200", image_document.text)
+
+    pdf = self.docs / "scan.pdf"
+    from PIL import Image
+
+    with Image.open(str(image)) as scan:
+      scan.save(str(pdf), "PDF", resolution=200)
+    pdf_document = self.service.read(str(pdf))
+    self.assertEqual(pdf_document.format, "PDF")
+    self.assertIn("[Page 1]", pdf_document.text)
+    self.assertIn("JARVIS", pdf_document.text)
+    self.assertIn("1200", pdf_document.text)
+    self.assertEqual(pdf_document.metadata["ocr_pages"], 1)
+    self.service.index(str(pdf))
+    self.assertTrue(
+        any("Budget" in hit["text"] for hit in self.service.search("Budget"))
+    )
+
+  def test_image_ocr_can_be_disabled(self):
+    image = self.make_scan("disabled.png")
+    disabled = dataclasses.replace(self.service._config, ocr_enabled=False)
+    with self.assertRaises(DocumentError):
+      read_document(disabled, image)
 
   def test_unsupported_and_missing_files_are_rejected(self):
     self.write("data.json", "{}")

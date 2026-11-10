@@ -6,8 +6,9 @@ around a small local LLM (Llama 3.2 1B Instruct Q4_K_M) served by the existing
 deterministic Python modules do the audio, routing and tool work.
 
 **Current status:** Phase 1 (stabilization) and feature sets **4.1 Voice
-Interface** through **4.10 Document Intelligence** complete, released as
-**v0.2.3** in the moderate-advanced feature line. JARVIS listens through the
+Interface** through **4.10 Document Intelligence** complete, plus optional
+document OCR, released as **v0.2.4** in the moderate-advanced feature line.
+JARVIS listens through the
 microphone with push-to-talk, transcribes offline with Vosk, keeps multi-turn
 context across restarts, remembers explicitly saved preferences, facts, paths
 and folders, learns high-confidence first-person facts with provenance and
@@ -15,7 +16,8 @@ expiry, summarizes substantive exchanges as episodic memory, answers simple
 questions deterministically through Python, operates the computer through
 validated tools, plans and executes durable multi-step tasks with approval,
 checkpoints and verification, reads and indexes local PDF, DOCX, TXT,
-Markdown, CSV and XLSX documents, answers document questions from retrieved
+Markdown, CSV and XLSX documents, OCRs scanned PDFs and images, answers
+document questions from retrieved
 passages, extracts dates, tables and action items, compares and converts
 documents, searches the web and answers only from the fetched evidence with
 sources, converts units and text, reports the weather, runs timers and
@@ -31,6 +33,8 @@ speaks through an interruptible Windows SAPI voice. Feature set 4.11 is next
 - `models/Llama-3.2-1B-Instruct-Q4_K_M.gguf`
 - A microphone and speakers; speech output needs a Windows SAPI voice
   (Microsoft David or Zira ship with Windows)
+- OCR needs Windows and an installed Windows OCR language pack; `en-US` is
+  available on most English installations
 - 8 GB RAM target machine. Measured: ~0.95 GB total with the LLM loaded, and
   ~195 MB for the Python voice process (Vosk model, SAPI, audio stack)
 
@@ -66,7 +70,7 @@ All runtime settings live in `config/settings.toml`:
 | `[conversation]` | Multi-turn context, answer mode, token limits, summarization, history database |
 | `[tools]` | File sandbox root, read/search limits, allowed applications and commands |
 | `[tasks]` | Durable task database, step limit, retries, parallel workers and approval |
-| `[documents]` | Document database, file/text limits, chunking, retrieval and folder-index limits |
+| `[documents]` | Document database, limits, chunking, retrieval, folder indexing and optional OCR |
 | `[web]` | Search provider, result and query limits, page extraction, evidence budget, cache |
 | `[memory]` | Enable memory, its SQLite file, automatic learning, retention and how many memories reach the prompt |
 | `[weather]` | Weather flag, metric or imperial units, default location and timeout |
@@ -246,14 +250,17 @@ unapproved tasks stay paused until `/confirm`.
 JARVIS reads local documents without uploading them. Extraction turns PDF,
 DOCX, TXT, Markdown, CSV and XLSX content into text and tables; the chunk
 index lives next to the other assistant tables in SQLite, and retrieval uses
-bundled FTS5 with a scored scan fallback. There is no vector database and no
-embedding model in this feature set. Only the retrieved passages, not a whole
-document, are sent to the local model for question answering or explanation.
+bundled FTS5 with a scored scan fallback. Optional OCR uses the built-in
+Windows OCR engine for scanned PDF pages and PNG, JPG, BMP, TIFF or WebP
+images. There is no vector database and no embedding model in this feature
+set. Only the retrieved passages, not a whole document, are sent to the local
+model for question answering or explanation.
 
 | Capability | Behaviour |
 | --- | --- |
 | Read | Text and tables from PDF, DOCX, TXT, Markdown, CSV and XLSX; `[Page N]` markers remain in PDF text |
-| Index | One file or a whole folder; unchanged files are skipped on a second scan; hidden, model, cache and virtual-environment folders are ignored |
+| OCR | Scanned PDF pages and image files when `ocr_enabled` is on; PDF pages are rendered at `ocr_dpi`, and only pages with fewer than `ocr_min_chars` characters are OCRed |
+| Index | One file or a whole folder, including OCRable images when enabled; unchanged files are skipped on a second scan; hidden, model, cache and virtual-environment folders are ignored |
 | Search | FTS5 keyword retrieval over overlapping passages, with document title, path and passage number |
 | Ask | The model answers only from the retrieved passages and must cite them; when no passage matches, JARVIS says so instead of guessing |
 | Summarize | Local extractive summary; no model call and no document text leaves the machine |
@@ -306,12 +313,20 @@ search_limit = 5
 context_chars = 4000
 max_files = 500
 max_chunks = 20000
+ocr_enabled = true
+ocr_language = "en-US"
+ocr_dpi = 200
+ocr_min_chars = 40
+ocr_max_pages = 20
 ```
 
 `max_file_bytes` and `max_chars` bound extraction; `chunk_chars` and
 `chunk_overlap` control passage boundaries; `context_chars` is the evidence
 budget for document answers; `max_files` and `max_chunks` bound folder
-indexing. Increasing these raises RAM and request size on the 8 GB target.
+indexing. `ocr_enabled` turns image reading and scanned-page OCR on or off;
+`ocr_language` must match an installed Windows OCR language pack (usually
+`en-US`), and `ocr_max_pages` limits OCR work per PDF. Increasing these raises
+RAM, CPU time and request size on the 8 GB target.
 
 ### Memory
 
@@ -516,9 +531,9 @@ durable task planning, dependencies, conditions, approvals, retries,
 dynamic replanning, parallel and background execution, cancellation,
 resumption, verification and folder organization, PDF/DOCX/TXT/Markdown/CSV/
 XLSX extraction and tables, document chunking, FTS5 search and scan fallback,
-folder indexing and unchanged-file skipping, summaries, dates, action items,
-comparison, conversion, report and document generation, document commands and
-tool confirmations, unit conversions, text and size formatting,
+folder indexing and unchanged-file skipping, OCR of images and image-only
+PDFs, OCR disabling, summaries, dates, action items, comparison, conversion,
+report and document generation, document commands and tool confirmations, unit conversions, text and size formatting,
 Open-Meteo response parsing, timer polling and reminder persistence, Escape
 interruption, VAD segmentation,
 resampling, device resolution, speech text cleanup and SAPI rate mapping. The
@@ -555,7 +570,7 @@ web/cache.py            Bounded SQLite search cache with stale fallback
 core/memory.py          Layered memory store, FTS5 search, episodes, ranking
 core/learning.py        Candidate extraction, importance, episodes, short-term buffer
 core/tasks.py           Durable plans, execution, approval, checkpoints, history
-core/documents.py       Extraction, chunking, FTS5 index, retrieval and generation
+core/documents.py       Extraction, OCR, chunking, FTS5 index, retrieval and generation
 tools/documents.py      Document tool handlers for the validated registry
 core/utilities.py       Unit conversion, text, size, duration and reminder parsing
 core/timers.py          In-memory timers, persisted reminders and notifications
@@ -597,17 +612,23 @@ logs/                   Runtime logs (git-ignored)
   planned: the sequence stops at that clause and the confirmation shows what
   will run. Organization and `as a task` / `/tasks plan` requests become
   durable tasks; open-ended reasoning still goes to the model.
-- Document extraction reads text and tables, not images. Scanned PDFs without
-  a text layer, charts, embedded images and Office drawing objects are not
-  OCRed or described. PDF generation is text-only with Helvetica and Latin-1
-  characters; complex layout, fonts and non-Latin scripts are not reproduced.
-  Document search is lexical FTS5 with no embeddings, so a question that uses
-  different words from the document can miss a relevant passage. Indexing is
-  bounded by `max_files` and `max_chunks`, and CSV/XLSX conversion requires
-  extracted tables. DOCX/XLSX/PDF libraries are imported only when a matching
-  file is opened; opening the document service added about 5 MiB RSS and the
-  three libraries together added about 30 MiB when first imported on this
-  machine.
+- OCR is optional and uses the built-in Windows OCR engine, so it needs
+  Windows and the matching OCR language pack. It reads scanned PDF pages up to
+  `ocr_max_pages` and image files; low-resolution, rotated or unusual-font
+  scans may be inaccurate. Charts, photos, embedded Office objects and images
+  inside DOCX/XLSX are not described, and OCR does not preserve tables.
+  PDF generation is text-only with Helvetica and Latin-1 characters; complex
+  layout, fonts and non-Latin scripts are not reproduced. Document search is
+  lexical FTS5 with no embeddings, so a question that uses different words
+  from the document can miss a relevant passage. Indexing is bounded by
+  `max_files` and `max_chunks`, and CSV/XLSX conversion requires extracted
+  tables. DOCX/XLSX/PDF libraries are imported only when a matching file is
+  opened; OCR libraries are imported only when a scanned page or image is
+  processed. Opening the document service added about 5 MiB RSS, the three
+  extraction libraries together added about 30 MiB when first imported. The
+  OCR imports added about 16 MiB, and a small image plus OCR run brought the
+  total increase to about 24 MiB on this machine. OCR page rendering uses
+  additional transient memory proportional to `ocr_dpi`.
 - Organization is capped at `[tasks] max_steps` (5000 by default) and
   inspects and verifies at most that many items. A single run therefore covers
   thousands of files, but a folder above the cap still has to be split.

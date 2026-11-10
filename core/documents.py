@@ -1,9 +1,10 @@
 """Local document intelligence and retrieval-augmented search.
 
-Documents stay on disk. Extraction normalizes PDF, DOCX, TXT, Markdown, CSV
-and XLSX files into text and tables, then a bounded chunk index in SQLite FTS5
-supplies passages for search and question answering. No vector database or
-embedding model is used in this feature set.
+Documents stay on disk. Extraction normalizes PDF, DOCX, TXT, Markdown, CSV,
+XLSX and (optionally) image files into text and tables, then a bounded chunk
+index in SQLite FTS5 supplies passages for search and question answering.
+Scanned PDF pages use the built-in Windows OCR engine through winocr; no
+vector database or embedding model is used.
 """
 
 from __future__ import annotations
@@ -40,12 +41,30 @@ SUPPORTED_EXTENSIONS = {
     ".xlsx",
     ".xlsm",
 }
+IMAGE_EXTENSIONS = {
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".bmp",
+    ".tif",
+    ".tiff",
+    ".webp",
+}
 TEXT_EXTENSIONS = {".txt", ".md", ".markdown"}
 MAX_TABLE_ROWS = 200
 MAX_TABLE_COLUMNS = 30
+MAX_OCR_PIXELS = 25_000_000
 DATE_LIMIT = 50
 ACTION_LIMIT = 30
 SUMMARY_SENTENCES = 6
+
+
+def supported_extensions(config=None):
+  """Formats accepted for reading, including images when OCR is enabled."""
+  formats = set(SUPPORTED_EXTENSIONS)
+  if config is not None and getattr(config, "ocr_enabled", False):
+    formats.update(IMAGE_EXTENSIONS)
+  return formats
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS documents (
@@ -274,6 +293,92 @@ def _table_from_rows(name, rows):
   return Table(name=name, rows=clean)
 
 
+def _ocr_text(result):
+  """Read text from either the sync dict or async winocr result shape."""
+  if isinstance(result, dict):
+    lines = result.get("lines") or []
+    texts = [
+        str(line.get("text") or "").strip()
+        for line in lines
+        if isinstance(line, dict)
+    ]
+    if any(texts):
+      return "\n".join(text for text in texts if text)
+    return str(result.get("text") or "").strip()
+  return str(getattr(result, "text", "") or "").strip()
+
+
+def _ocr_pil(image, config):
+  """Run the local Windows OCR engine on one already-open image."""
+  try:
+    import winocr
+  except ImportError as exc:
+    raise DocumentError(
+        "OCR needs winocr; run pip install -r requirements.txt"
+    ) from exc
+  if image.width * image.height > MAX_OCR_PIXELS:
+    raise DocumentError(
+        f"that image is too large for OCR ({image.width}x{image.height})"
+    )
+  converted = None
+  if image.mode not in {"RGB", "L"}:
+    converted = image = image.convert("RGB")
+  try:
+    result = winocr.recognize_pil_sync(
+        image, getattr(config, "ocr_language", "en-US")
+    )
+  except Exception as exc:
+    raise DocumentError(
+        f"Windows OCR failed ({exc}); check the [documents] ocr_language"
+        " language pack"
+    ) from exc
+  finally:
+    if converted is not None:
+      converted.close()
+  return _ocr_text(result)
+
+
+def _ocr_pdf_pages(path, config, page_numbers):
+  """Render selected PDF pages and return OCR text keyed by page number."""
+  try:
+    import pypdfium2 as pdfium
+  except ImportError as exc:
+    raise DocumentError(
+        "PDF OCR needs pypdfium2; run pip install -r requirements.txt"
+    ) from exc
+  try:
+    pdf = pdfium.PdfDocument(str(path))
+  except Exception as exc:
+    raise DocumentError(f"I could not render {path.name} for OCR: {exc}") from exc
+  results = {}
+  errors = []
+  try:
+    for page_number in page_numbers[: config.ocr_max_pages]:
+      page = None
+      bitmap = None
+      image = None
+      try:
+        page = pdf[page_number - 1]
+        bitmap = page.render(scale=float(config.ocr_dpi) / 72.0)
+        image = bitmap.to_pil()
+        text = _ocr_pil(image, config)
+        if text:
+          results[page_number] = text
+      except Exception as exc:
+        log.warning("OCR failed for %s page %s: %s", path.name, page_number, exc)
+        errors.append(str(exc))
+      finally:
+        if image is not None:
+          image.close()
+        if bitmap is not None:
+          bitmap.close()
+        if page is not None:
+          page.close()
+  finally:
+    pdf.close()
+  return results, errors
+
+
 def _read_pdf(path, config):
   try:
     from pypdf import PdfReader
@@ -283,17 +388,49 @@ def _read_pdf(path, config):
     ) from exc
   try:
     reader = PdfReader(str(path))
-    pages = []
+    page_texts = []
     for index, page in enumerate(reader.pages, 1):
       try:
         text = page.extract_text() or ""
       except Exception as exc:  # one bad page should not lose the file
         log.warning("PDF page %s of %s failed: %s", index, path.name, exc)
         text = ""
-      if text.strip():
-        pages.append(f"[Page {index}]\n{text.strip()}")
+      page_texts.append(text.strip())
   except Exception as exc:
     raise DocumentError(f"I could not read the PDF {path.name}: {exc}") from exc
+  metadata = {"pages": len(page_texts)}
+  ocr_error = ""
+  if config.ocr_enabled:
+    ocr_pages = [
+        index
+        for index, text in enumerate(page_texts, 1)
+        if len(text) < config.ocr_min_chars
+    ]
+    if ocr_pages:
+      try:
+        ocr_text, errors = _ocr_pdf_pages(path, config, ocr_pages)
+      except DocumentError as exc:
+        ocr_text, errors = {}, [str(exc)]
+      for page_number, text in ocr_text.items():
+        original = page_texts[page_number - 1]
+        page_texts[page_number - 1] = (
+            (original + "\n" + text).strip() if original else text
+        )
+      metadata["ocr_pages"] = len(ocr_text)
+      metadata["ocr_truncated"] = len(ocr_pages) > config.ocr_max_pages
+      if errors and not ocr_text:
+        ocr_error = errors[0]
+      elif errors:
+        metadata["ocr_errors"] = errors[:3]
+  pages = [
+      f"[Page {index}]\n{text}"
+      for index, text in enumerate(page_texts, 1)
+      if text.strip()
+  ]
+  if not pages and ocr_error:
+    raise DocumentError(
+        f"I could not OCR the scanned PDF {path.name}: {ocr_error}"
+    )
   title = path.stem
   try:
     title = (reader.metadata or {}).get("/Title") or title
@@ -305,7 +442,43 @@ def _read_pdf(path, config):
       format="PDF",
       text="\n\n".join(pages),
       paragraphs="\n\n".join(pages),
-      metadata={"pages": len(reader.pages)},
+      metadata=metadata,
+  )
+
+
+def _read_image(path, config):
+  """OCR a local image when the optional document OCR is enabled."""
+  if not config.ocr_enabled:
+    raise DocumentError(
+        f"{path.name} is an image; enable [documents] ocr_enabled to read it"
+    )
+  try:
+    from PIL import Image
+  except ImportError as exc:
+    raise DocumentError(
+        "Image OCR needs Pillow; run pip install -r requirements.txt"
+    ) from exc
+  try:
+    with Image.open(str(path)) as image:
+      if image.width * image.height > MAX_OCR_PIXELS:
+        raise DocumentError(
+            f"that image is too large for OCR ({image.width}x{image.height})"
+        )
+      image.load()
+      text = _ocr_pil(image, config)
+  except DocumentError:
+    raise
+  except Exception as exc:
+    raise DocumentError(f"I could not read the image {path.name}: {exc}") from exc
+  if not text:
+    raise DocumentError(f"I found no text in the image {path.name}")
+  return Document(
+      path=path,
+      title=path.stem,
+      format=path.suffix.lstrip(".").upper(),
+      text=text,
+      paragraphs=text,
+      metadata={"ocr": True, "pages": 1},
   )
 
 
@@ -462,11 +635,14 @@ def read_document(config, path):
         f"{target.name} is larger than the {config.max_file_bytes} byte limit"
     )
   extension = target.suffix.lower()
-  if extension not in SUPPORTED_EXTENSIONS:
-    formats = ", ".join(sorted(SUPPORTED_EXTENSIONS))
+  formats_available = supported_extensions(config)
+  if extension not in formats_available:
+    formats = ", ".join(sorted(formats_available))
     raise DocumentError(f"{extension or 'that file'} is not supported ({formats})")
   if extension == ".pdf":
     document = _read_pdf(target, config)
+  elif extension in IMAGE_EXTENSIONS:
+    document = _read_image(target, config)
   elif extension == ".docx":
     document = _read_docx(target, config)
   elif extension in {".xlsx", ".xlsm"}:
@@ -968,7 +1144,7 @@ class DocumentService:
               stack.append((entry, depth + 1))
             continue
           if (
-              entry.suffix.lower() in SUPPORTED_EXTENSIONS
+              entry.suffix.lower() in supported_extensions(self._config)
               and not entry.name.startswith(".")
               and entry.stat().st_size <= self._config.max_file_bytes
           ):

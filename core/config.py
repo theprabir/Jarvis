@@ -171,6 +171,13 @@ class DocumentsConfig:
   context_chars: int = 4000
   max_files: int = 500
   max_chunks: int = 20_000
+  # Optional OCR for scanned PDF pages and images. Windows.Media.Ocr runs
+  # locally through winocr; pages are rendered with pypdfium2.
+  ocr_enabled: bool = True
+  ocr_language: str = "en-US"
+  ocr_dpi: int = 200
+  ocr_min_chars: int = 40
+  ocr_max_pages: int = 20
 
   @property
   def resolved_db(self) -> Path:
@@ -413,6 +420,28 @@ def _validate(settings):
   _require(
       100 <= documents.max_chunks <= 100_000,
       "[documents] max_chunks must be 100-100000",
+  )
+  _require(
+      isinstance(documents.ocr_enabled, bool),
+      "[documents] ocr_enabled must be true or false",
+  )
+  _require(
+      isinstance(documents.ocr_language, str)
+      and bool(documents.ocr_language.strip())
+      and len(documents.ocr_language) <= 32,
+      "[documents] ocr_language must be a non-empty language tag",
+  )
+  _require(
+      100 <= documents.ocr_dpi <= 400,
+      "[documents] ocr_dpi must be 100-400",
+  )
+  _require(
+      0 <= documents.ocr_min_chars <= 1000,
+      "[documents] ocr_min_chars must be 0-1000",
+  )
+  _require(
+      1 <= documents.ocr_max_pages <= 100,
+      "[documents] ocr_max_pages must be 1-100",
   )
 
   memory = settings.memory

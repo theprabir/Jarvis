@@ -19,6 +19,13 @@ pypdf>=4.0
 python-docx>=1.1
 openpyxl>=3.1
 
+# Optional OCR for scanned PDFs and images. Uses the built-in Windows OCR
+# engine (winocr), with pypdfium2 rendering PDF pages and Pillow for images.
+# Disable [documents] ocr_enabled if OCR is not needed.
+pillow>=10.0
+pypdfium2>=4.30
+winocr>=0.0.15
+
 # Web search: the maintained DuckDuckGo client (providers abstract it away).
 ddgs>=9.0.0
 # Legacy: still imported by core/tools.py, which main.py no longer uses.

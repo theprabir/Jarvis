@@ -7,6 +7,58 @@ all feature sets in a phase increments the middle number and resets the patch.
 feature sets in this level increment the patch (v0.2.1, …), and completing the
 level increments the middle number.
 
+## v0.2.4 — 2026-11-10
+
+**Optional OCR for scanned documents**
+
+### Implemented functionality
+
+- **Scanned PDF OCR** — PDF pages with fewer than `ocr_min_chars` extracted
+  characters are rendered locally with `pypdfium2` and recognized through the
+  built-in Windows OCR engine (`winocr`). Existing page text is kept and OCR
+  text is appended, so headers and mixed pages are not lost. OCR work is
+  bounded by `ocr_max_pages`; additional scanned pages are skipped and reported.
+- **Image OCR** — PNG, JPG/JPEG, BMP, TIFF and WebP files can be read and
+  indexed as documents when OCR is enabled. Images are OCRed locally through
+  Pillow and the Windows engine.
+- **Configuration and safety** — `[documents] ocr_enabled`, `ocr_language`,
+  `ocr_dpi`, `ocr_min_chars` and `ocr_max_pages` are validated. Images are
+  accepted only while OCR is enabled, OCR paths keep the existing `[tools]
+  root` sandbox, and an image larger than 25 megapixels is rejected before
+  decoding.
+- **Fallbacks** — missing `winocr`, `pypdfium2`, Pillow or language packs
+  produce an actionable `DocumentError`; if only OCR fails, normally extracted
+  PDF text is still returned. OCR status is exposed in document metadata and
+  mentioned in `/documents read` output.
+- **Indexing** — OCRed PDFs and images feed the existing SQLite/FTS5 chunk
+  index, so search, Q&A, summaries, dates, actions, comparison, conversion and
+  reports work on scanned content without a separate pipeline.
+
+### Files
+
+- `core/documents.py` — OCR engine integration, PDF page rendering, image
+  extraction, OCR metadata and image-aware extension handling.
+- `core/config.py`, `config/settings.toml` — validated OCR settings.
+- `core/assistant.py` — OCR notices in the read response.
+- `requirements.txt` — Pillow, pypdfium2 and winocr.
+- `tests/test_documents.py` — real generated-image and image-only PDF OCR
+  tests, plus OCR-disabled coverage.
+- `README.md`, `CHANGELOG.md` — OCR capabilities, setup, limits and status.
+
+### Bug fixes
+
+- None in this enhancement.
+
+### Testing
+
+- `python -m compileall -q core tools config tests main.py` passed.
+- `python -m unittest discover -s tests` passed: **375 tests**.
+- OCR smoke test used a generated PNG and an image-only PDF; both returned the
+  expected `JARVIS` and `1200` text through the document service.
+- Memory check: the OCR imports added about **16 MiB RSS**, and a small
+  image plus OCR run brought the total increase to about **24 MiB**. OCR page
+  rendering is transient and bounded by page size.
+
 ## v0.2.3 — 2026-11-10
 
 **Document intelligence (feature set 4.10)**

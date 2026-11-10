@@ -6,19 +6,22 @@ around a small local LLM (Llama 3.2 1B Instruct Q4_K_M) served by the existing
 deterministic Python modules do the audio, routing and tool work.
 
 **Current status:** Phase 1 (stabilization) and feature sets **4.1 Voice
-Interface** through **4.9 Task Planning and Execution** complete, released as
-**v0.2.2** in the moderate-advanced feature line. JARVIS listens through the
+Interface** through **4.10 Document Intelligence** complete, released as
+**v0.2.3** in the moderate-advanced feature line. JARVIS listens through the
 microphone with push-to-talk, transcribes offline with Vosk, keeps multi-turn
 context across restarts, remembers explicitly saved preferences, facts, paths
 and folders, learns high-confidence first-person facts with provenance and
 expiry, summarizes substantive exchanges as episodic memory, answers simple
 questions deterministically through Python, operates the computer through
 validated tools, plans and executes durable multi-step tasks with approval,
-checkpoints and verification, searches the web and answers only from the
-fetched evidence with sources, converts units and text, reports the weather,
-runs timers and persisted reminders, falls back to the local model for
-everything else, and speaks through an interruptible Windows SAPI voice.
-Feature set 4.10 is next (see `PLANS-STACK-FEATURES.md`, `CHANGELOG.md`).
+checkpoints and verification, reads and indexes local PDF, DOCX, TXT,
+Markdown, CSV and XLSX documents, answers document questions from retrieved
+passages, extracts dates, tables and action items, compares and converts
+documents, searches the web and answers only from the fetched evidence with
+sources, converts units and text, reports the weather, runs timers and
+persisted reminders, falls back to the local model for everything else, and
+speaks through an interruptible Windows SAPI voice. Feature set 4.11 is next
+(see `PLANS-STACK-FEATURES.md`, `CHANGELOG.md`).
 
 ## Requirements
 
@@ -63,6 +66,7 @@ All runtime settings live in `config/settings.toml`:
 | `[conversation]` | Multi-turn context, answer mode, token limits, summarization, history database |
 | `[tools]` | File sandbox root, read/search limits, allowed applications and commands |
 | `[tasks]` | Durable task database, step limit, retries, parallel workers and approval |
+| `[documents]` | Document database, file/text limits, chunking, retrieval and folder-index limits |
 | `[web]` | Search provider, result and query limits, page extraction, evidence budget, cache |
 | `[memory]` | Enable memory, its SQLite file, automatic learning, retention and how many memories reach the prompt |
 | `[weather]` | Weather flag, metric or imperial units, default location and timeout |
@@ -237,6 +241,78 @@ single organization run can handle thousands of files. `auto_resume` restarts
 approved background tasks that were still running when JARVIS stopped;
 unapproved tasks stay paused until `/confirm`.
 
+### Document intelligence
+
+JARVIS reads local documents without uploading them. Extraction turns PDF,
+DOCX, TXT, Markdown, CSV and XLSX content into text and tables; the chunk
+index lives next to the other assistant tables in SQLite, and retrieval uses
+bundled FTS5 with a scored scan fallback. There is no vector database and no
+embedding model in this feature set. Only the retrieved passages, not a whole
+document, are sent to the local model for question answering or explanation.
+
+| Capability | Behaviour |
+| --- | --- |
+| Read | Text and tables from PDF, DOCX, TXT, Markdown, CSV and XLSX; `[Page N]` markers remain in PDF text |
+| Index | One file or a whole folder; unchanged files are skipped on a second scan; hidden, model, cache and virtual-environment folders are ignored |
+| Search | FTS5 keyword retrieval over overlapping passages, with document title, path and passage number |
+| Ask | The model answers only from the retrieved passages and must cite them; when no passage matches, JARVIS says so instead of guessing |
+| Summarize | Local extractive summary; no model call and no document text leaves the machine |
+| Compare | Line similarity, added/removed lines, and key terms unique to each document |
+| Dates and actions | Explicit dates with surrounding context, checkbox/TODO items and bullets under action headings |
+| Tables | Extracted cell rows rendered as Markdown, bounded by row and column limits |
+| Explain | A model explanation of purpose, structure, terms, decisions and risks using only the document text |
+| Convert | Save a document as another supported format; table targets require extracted tables |
+| Generate | Create a PDF, DOCX, TXT, Markdown, CSV or XLSX from a request after confirmation |
+| Report | Combine summaries, dates and action items from several documents into one report |
+
+| Command | Purpose |
+| --- | --- |
+| `/documents list` | Show indexed documents, formats and passage counts |
+| `/documents index [PATH]` | Index one file or a folder (default `Documents`) |
+| `/documents search QUERY` | Search indexed passages |
+| `/documents ask QUESTION` | Answer from indexed passages with sources |
+| `/documents read PATH` | Show extracted text (the reply is capped) |
+| `/documents summarize PATH` | Show a local summary |
+| `/documents dates PATH`, `/documents actions PATH` | Extract dated context or action items |
+| `/documents tables PATH` | Render extracted tables |
+| `/documents explain PATH` | Explain a technical document through the local model |
+| `/documents compare A and B` | Compare two documents (a pipe separator also works) |
+| `/documents convert SOURCE` | Convert to a target path or format |
+| `/documents create PATH` | Create a document directly |
+| `/documents report [OUTPUT]` | Build a report from documents |
+| `/documents remove PATH` | Remove one document from the index (the file stays) |
+| `/documents last` | Show the last document used |
+
+For `convert`, `create` and `report`, separate additional arguments with a
+vertical bar (`|`); `compare` also accepts `and` between the two paths.
+
+Natural requests also work: `index report.pdf`, `search documents for budget`,
+`ask documents about revenue`, `summarize report.pdf`, `find dates in
+report.pdf`, `list action items from report.pdf`, `show tables from
+report.pdf`, `compare a.pdf and b.pdf`, `convert report.pdf to docx`, `create a
+pdf document named weekly.pdf about the budget`, and `generate a report from
+a.pdf and b.pdf`. File writing, conversion and generation still ask for
+confirmation. Paths stay inside `[tools] root`.
+
+```toml
+[documents]
+enabled = true
+db = "data/jarvis.db"
+max_file_bytes = 20000000
+max_chars = 2000000
+chunk_chars = 900
+chunk_overlap = 120
+search_limit = 5
+context_chars = 4000
+max_files = 500
+max_chunks = 20000
+```
+
+`max_file_bytes` and `max_chars` bound extraction; `chunk_chars` and
+`chunk_overlap` control passage boundaries; `context_chars` is the evidence
+budget for document answers; `max_files` and `max_chunks` bound folder
+indexing. Increasing these raises RAM and request size on the 8 GB target.
+
 ### Memory
 
 Memory is layered rather than a transcript. Explicit memories are exactly what
@@ -391,7 +467,8 @@ Voice mode is the default. JARVIS prints a short greeting, then waits:
 - `/stop` clears a pending interrupt and `/voices` lists installed SAPI voices.
 - `/new` starts a fresh conversation, `/mode short|detailed|technical` changes
   how much JARVIS says, `/history` shows recent exchanges, `/intent TEXT` shows
-  the detected intent as JSON, `/tools` lists computer tools, `/confirm` and
+  the detected intent as JSON, `/tools` lists computer tools, `/documents`
+  manages local document indexing, search and generation, `/confirm` and
   `/cancel` approve or drop a pending action, `/forget` deletes saved history
   after confirmation, and `/help` lists the commands.
 - `exit`, `quit`, `bye` (typed or spoken) shut down; Ctrl-C also exits cleanly.
@@ -437,8 +514,11 @@ conflict superseding and history, ranked retrieval, expiry, episodic
 summaries and controls, short-term session context, auto-learning disabled,
 durable task planning, dependencies, conditions, approvals, retries,
 dynamic replanning, parallel and background execution, cancellation,
-resumption, verification and folder organization,
-unit conversions, text and size formatting,
+resumption, verification and folder organization, PDF/DOCX/TXT/Markdown/CSV/
+XLSX extraction and tables, document chunking, FTS5 search and scan fallback,
+folder indexing and unchanged-file skipping, summaries, dates, action items,
+comparison, conversion, report and document generation, document commands and
+tool confirmations, unit conversions, text and size formatting,
 Open-Meteo response parsing, timer polling and reminder persistence, Escape
 interruption, VAD segmentation,
 resampling, device resolution, speech text cleanup and SAPI rate mapping. The
@@ -475,6 +555,8 @@ web/cache.py            Bounded SQLite search cache with stale fallback
 core/memory.py          Layered memory store, FTS5 search, episodes, ranking
 core/learning.py        Candidate extraction, importance, episodes, short-term buffer
 core/tasks.py           Durable plans, execution, approval, checkpoints, history
+core/documents.py       Extraction, chunking, FTS5 index, retrieval and generation
+tools/documents.py      Document tool handlers for the validated registry
 core/utilities.py       Unit conversion, text, size, duration and reminder parsing
 core/timers.py          In-memory timers, persisted reminders and notifications
 core/weather.py         Open-Meteo geocoding and current conditions
@@ -515,6 +597,17 @@ logs/                   Runtime logs (git-ignored)
   planned: the sequence stops at that clause and the confirmation shows what
   will run. Organization and `as a task` / `/tasks plan` requests become
   durable tasks; open-ended reasoning still goes to the model.
+- Document extraction reads text and tables, not images. Scanned PDFs without
+  a text layer, charts, embedded images and Office drawing objects are not
+  OCRed or described. PDF generation is text-only with Helvetica and Latin-1
+  characters; complex layout, fonts and non-Latin scripts are not reproduced.
+  Document search is lexical FTS5 with no embeddings, so a question that uses
+  different words from the document can miss a relevant passage. Indexing is
+  bounded by `max_files` and `max_chunks`, and CSV/XLSX conversion requires
+  extracted tables. DOCX/XLSX/PDF libraries are imported only when a matching
+  file is opened; opening the document service added about 5 MiB RSS and the
+  three libraries together added about 30 MiB when first imported on this
+  machine.
 - Organization is capped at `[tasks] max_steps` (5000 by default) and
   inspects and verifies at most that many items. A single run therefore covers
   thousands of files, but a folder above the cap still has to be split.

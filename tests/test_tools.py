@@ -124,7 +124,12 @@ class RegistryTests(unittest.TestCase):
   def test_registry_covers_every_tool_intent(self):
     from core.intents import TOOL_INTENTS
 
-    self.assertEqual(set(self.registry.names()), set(TOOL_INTENTS))
+    # Document tools are registered only when a document service is supplied;
+    # this bare registry still covers every non-document tool intent.
+    self.assertEqual(
+        set(self.registry.names()),
+        set(TOOL_INTENTS) - {"document_convert"},
+    )
 
 
 class FileToolTests(unittest.TestCase):

@@ -155,6 +155,27 @@ auto_resume = true
 # Rows shown by /tasks history.
 history_items = 20
 
+[documents]
+# Local document intelligence: PDF, DOCX, TXT, Markdown, CSV and XLSX.
+# Text and tables stay on this machine; only retrieved passages are sent to
+# the local model for question answering and explanations.
+enabled = true
+# Metadata and chunk index share the assistant database.
+db = "data/jarvis.db"
+# Reject files above this size instead of reading them into memory.
+max_file_bytes = 20000000
+# Cap extracted text per document to keep indexing bounded.
+max_chars = 2000000
+# Passage size and overlap for FTS5 retrieval (characters).
+chunk_chars = 900
+chunk_overlap = 120
+# Passages shown by document search, and the evidence budget for answers.
+search_limit = 5
+context_chars = 4000
+# Folder indexing limits.
+max_files = 500
+max_chunks = 20000
+
 [web]
 # Internet search and grounded answers. No API key is needed for DuckDuckGo.
 enabled = true

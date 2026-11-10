@@ -7,6 +7,87 @@ all feature sets in a phase increments the middle number and resets the patch.
 feature sets in this level increment the patch (v0.2.1, …), and completing the
 level increments the middle number.
 
+## v0.2.3 — 2026-11-10
+
+**Document intelligence (feature set 4.10)**
+
+### Implemented functionality
+
+- **Local extraction** — PDF (`pypdf`), DOCX (`python-docx`), XLSX/XLSM
+  (`openpyxl`), CSV, TXT and Markdown readers produce bounded text plus table
+  rows. PDF page markers remain in the text, DOCX headings/styles are retained
+  as text, and XLSX sheets become named tables. Unsupported files, oversized
+  files and paths outside `[tools] root` are rejected.
+- **Local index and retrieval** — `DocumentStore` keeps document metadata and
+  overlapping passages in SQLite. FTS5 is used when available, with a scored
+  scan fallback. `/documents index` handles one file or a folder; unchanged
+  files are skipped, and virtual-environment, cache, model and hidden folders
+  are ignored. `max_files` and `max_chunks` bound a scan.
+- **Document Q&A** — `/documents ask` and natural requests retrieve passages,
+  send only that evidence to the local model, require a citation and return a
+  numbered source list. A missing or ungrounded answer falls back to the
+  retrieved passage or says the documents did not contain the answer.
+- **Summaries and extraction** — deterministic extractive summaries,
+  explicit dates with surrounding context (including month-year references),
+  checkbox/TODO action items and bullets under action headings, and extracted
+  tables rendered as Markdown.
+- **Comparison and explanation** — line-level similarity, added/removed lines,
+  unique key terms and table counts; technical explanations use only the
+  document text through the local model.
+- **Conversion and generation** — convert among supported formats (table
+  targets require extracted tables), create TXT/Markdown/CSV/XLSX/DOCX/PDF
+  documents, and build reports that combine summaries, dates and action items
+  from several documents. A small text-only PDF writer avoids another PDF
+  dependency. Writes, conversions and generation ask for confirmation.
+- **Commands and tools** — `/documents` and `/docs` support list, index,
+  search, ask, read, summarize, dates, actions, tables, explain, compare,
+  convert, create, report, remove and last. Natural document intents are routed
+  before computer file intents, while explicit `read file ...` remains the
+  original file tool. Document tools register only when the document service is
+  available and keep SAFE/CONFIRM permissions.
+
+### Files
+
+- `core/documents.py` — extraction, tables, chunking, SQLite/FTS5 store,
+  retrieval, summaries, dates, action items, comparison, conversion, report and
+  PDF/DOCX/XLSX/TXT/Markdown/CSV writers.
+- `tools/documents.py` — document tool handlers.
+- `tools/__init__.py` — optional document service and eight document tools.
+- `core/config.py`, `config/settings.toml` — validated `[documents]` section.
+- `core/intents.py` — document intents, commands and routing precedence.
+- `core/assistant.py` — document service lifecycle, commands, RAG answers,
+  local extraction replies and confirmation flow for generated files.
+- `requirements.txt` — `pypdf`, `python-docx`, `openpyxl`.
+- `tests/test_documents.py` — 24 tests covering every format, tables, path
+  rejection, indexing, unchanged-file skipping, FTS5 and scan fallback,
+  summaries, dates, actions, comparison, conversion, reports, commands, tools
+  and confirmations.
+- `tests/test_tools.py` — registry coverage assertion accounts for optional
+  document tools.
+- `README.md` — status, configuration, commands, project layout and limitations.
+
+### Bug fixes
+
+- Document routing no longer captures `read file notes.txt` or `read the file
+  notes.txt`; those stay with the existing file reader.
+- XLSX rows are trimmed of trailing empty cells, and DOCX extraction falls back
+  to the first heading for its title.
+- CRLF text is normalized, and extractive summaries split on paragraph breaks
+  instead of joining headings and bullets into one sentence.
+- DOCX conversion no longer duplicates table content as both paragraphs and
+  tables.
+
+### Testing
+
+- `python -m compileall -q core tools config tests main.py` passed.
+- `python -m unittest discover -s tests` passed: **373 tests**.
+- Document tests are offline and use generated files; no microphone, speaker or
+  internet access is required.
+- Memory check in the existing `.venv`: opening the document service added
+  about **5 MiB** RSS; importing the PDF, DOCX and XLSX libraries together
+  added about **30 MiB** only when first used. No new background process was
+  added.
+
 ## v0.2.2 — 2026-11-09
 
 **Task planning reliability fixes (feature set 4.9)**

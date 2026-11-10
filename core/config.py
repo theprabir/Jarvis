@@ -159,6 +159,26 @@ class TasksConfig:
 
 
 @dataclass(frozen=True)
+class DocumentsConfig:
+  enabled: bool = True
+  # Document metadata and chunk index share the assistant database.
+  db: str = "data/jarvis.db"
+  max_file_bytes: int = 20_000_000
+  max_chars: int = 2_000_000
+  chunk_chars: int = 900
+  chunk_overlap: int = 120
+  search_limit: int = 5
+  context_chars: int = 4000
+  max_files: int = 500
+  max_chunks: int = 20_000
+
+  @property
+  def resolved_db(self) -> Path:
+    path = Path(self.db)
+    return path if path.is_absolute() else (PROJECT_ROOT / path).resolve()
+
+
+@dataclass(frozen=True)
 class ToolsConfig:
   enabled: bool = True
   root: str = "."
@@ -225,6 +245,7 @@ class Settings:
   conversation: ConversationConfig
   tools: ToolsConfig
   tasks: TasksConfig
+  documents: DocumentsConfig
   memory: MemoryConfig
   weather: WeatherConfig
   web: WebConfig
@@ -359,6 +380,41 @@ def _validate(settings):
       "[tasks] auto_resume must be true or false",
   )
 
+  documents = settings.documents
+  _require(bool(documents.db), "[documents] db must not be empty")
+  _require(
+      10_000 <= documents.max_file_bytes <= 100_000_000,
+      "[documents] max_file_bytes must be 10000-100000000",
+  )
+  _require(
+      10_000 <= documents.max_chars <= 20_000_000,
+      "[documents] max_chars must be 10000-20000000",
+  )
+  _require(
+      200 <= documents.chunk_chars <= 4000,
+      "[documents] chunk_chars must be 200-4000",
+  )
+  _require(
+      0 <= documents.chunk_overlap < documents.chunk_chars,
+      "[documents] chunk_overlap must be 0 and less than chunk_chars",
+  )
+  _require(
+      1 <= documents.search_limit <= 20,
+      "[documents] search_limit must be 1-20",
+  )
+  _require(
+      500 <= documents.context_chars <= 12_000,
+      "[documents] context_chars must be 500-12000",
+  )
+  _require(
+      1 <= documents.max_files <= 5000,
+      "[documents] max_files must be 1-5000",
+  )
+  _require(
+      100 <= documents.max_chunks <= 100_000,
+      "[documents] max_chunks must be 100-100000",
+  )
+
   memory = settings.memory
   _require(bool(memory.db), "[memory] db must not be empty")
   _require(
@@ -474,6 +530,9 @@ def load_settings(path=None):
       ),
       tools=_build(ToolsConfig, raw.get("tools", {}), "tools"),
       tasks=_build(TasksConfig, raw.get("tasks", {}), "tasks"),
+      documents=_build(
+          DocumentsConfig, raw.get("documents", {}), "documents"
+      ),
       memory=_build(MemoryConfig, raw.get("memory", {}), "memory"),
       weather=_build(WeatherConfig, raw.get("weather", {}), "weather"),
       web=_build(WebConfig, raw.get("web", {}), "web"),

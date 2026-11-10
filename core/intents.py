@@ -54,6 +54,7 @@ TOOL_INTENTS = frozenset(
         "window_action",
         "clipboard_copy",
         "clipboard_read",
+        "document_convert",
     }
 )
 
@@ -103,6 +104,18 @@ CONVERSATION_INTENTS = frozenset(
         "task_resume",
         "task_cancel",
         "task_history",
+        "document_read",
+        "document_index",
+        "document_search",
+        "document_ask",
+        "document_summarize",
+        "document_compare",
+        "document_dates",
+        "document_actions",
+        "document_tables",
+        "document_explain",
+        "document_generate",
+        "document_report",
         "history",
         "forget",
         "intent",
@@ -125,6 +138,8 @@ COMMANDS = frozenset(
         "cancel",
         "tools",
         "tasks",
+        "documents",
+        "docs",
     }
 )
 
@@ -816,6 +831,287 @@ def recognize_tasks(text):
   return None
 
 
+_DOCUMENT_FORMATS = r"pdf|docx|txt|md|markdown|csv|xlsx|xlsm"
+_DOCUMENT_INDEX = re.compile(
+    r"^(?:index|scan|add)\s+(?:(?:my|the)\s+)?"
+    r"(?P<collection>documents?|document collection|files?)"
+    r"(?:\s+(?:folder|directory))?"
+    r"(?:\s+(?:in|from|under)\s+(?P<path>.+))?$",
+    re.I,
+)
+_DOCUMENT_INDEX_FILE = re.compile(
+    rf"^(?:index|scan|add)\s+(?P<path>.+\.(?:{_DOCUMENT_FORMATS}))$", re.I
+)
+_DOCUMENT_READ = re.compile(
+    r"^(?:read|open|show|display)\s+(?:me\s+)?"
+    r"(?:(?:the|this|my)\s+)?"
+    r"(?:document|pdf|docx|spreadsheet|worksheet|markdown file|text file)"
+    r"\s+(?P<path>.+)$",
+    re.I,
+)
+_DOCUMENT_READ_FILE = re.compile(
+    rf"^(?:read|extract text from)\s+(?:(?:the|this|my)\s+)?"
+    rf"(?!file\b)(?P<path>.+\.(?:{_DOCUMENT_FORMATS}))$",
+    re.I,
+)
+_DOCUMENT_READ_THIS = re.compile(
+    r"^(?:read|open|show|display)\s+(?:me\s+)?(?:this|the)\s+document$",
+    re.I,
+)
+_DOCUMENT_SUMMARIZE = re.compile(
+    r"^(?:summarize|summarise|summary of|give me a summary of)\s+"
+    r"(?P<body>.+)$",
+    re.I,
+)
+_DOCUMENT_SEARCH = re.compile(
+    r"^(?:search|find)\s+(?:(?:my|the)\s+)?(?:indexed\s+)?"
+    r"documents?(?:\s+collection)?(?:\s+(?:for|about))?\s*[:\-]?\s*"
+    r"(?P<query>.+)$",
+    re.I,
+)
+_DOCUMENT_ASK = re.compile(
+    r"^(?:ask|query)\s+(?:(?:my|the)\s+)?documents?"
+    r"(?:\s+(?:about|regarding))?\s*[:\-]?\s*(?P<query>.+)$",
+    re.I,
+)
+_DOCUMENT_SAY = re.compile(
+    r"^(?:what|which)\s+do\s+(?:(?:my|the)\s+)?documents?\s+say"
+    r"(?:\s+(?:about|regarding))?\s*[:\-]?\s*(?P<query>.+)$",
+    re.I,
+)
+_DOCUMENT_DATES = re.compile(
+    r"^(?:extract|find|list|show|get)\s+(?:the\s+)?"
+    r"(?:important\s+|key\s+)?dates?\s+(?:from|in)\s+(?P<path>.+)$",
+    re.I,
+)
+_DOCUMENT_ACTIONS = re.compile(
+    r"^(?:extract|find|list|show|get)\s+(?:the\s+)?action\s+items?"
+    r"\s+(?:from|in)\s+(?P<path>.+)$",
+    re.I,
+)
+_DOCUMENT_TABLES = re.compile(
+    r"^(?:extract|show|list|get)\s+(?:the\s+)?tables?\s+from\s+"
+    r"(?:(?:the|this)\s+document\s+)?(?P<path>.+)$",
+    re.I,
+)
+_DOCUMENT_COMPARE = re.compile(
+    r"^compare\s+(?:(?:the\s+)?documents?\s+)?"
+    r"(?P<first>.+?)\s+(?:and|with|to)\s+(?P<second>.+)$",
+    re.I,
+)
+_DOCUMENT_EXPLAIN = re.compile(
+    r"^explain\s+(?:(?:this|the)\s+)?(?:technical\s+)?"
+    r"(?:document|pdf|report|file)\s+(?P<path>.+)$",
+    re.I,
+)
+_DOCUMENT_EXPLAIN_FILE = re.compile(
+    rf"^explain\s+(?P<path>.+\.(?:{_DOCUMENT_FORMATS}))$", re.I
+)
+_DOCUMENT_EXPLAIN_THIS = re.compile(
+    r"^explain\s+(?:this|the)\s+(?:technical\s+)?(?:document|pdf|report)$",
+    re.I,
+)
+_DOCUMENT_CONVERT = re.compile(
+    rf"^convert\s+(?:(?:the\s+)?document\s+)?(?P<source>.+?)\s+"
+    rf"(?:to|into)\s+(?P<format>{_DOCUMENT_FORMATS})"
+    r"(?:\s+as\s+(?P<target>.+))?$",
+    re.I,
+)
+_DOCUMENT_GENERATE = re.compile(
+    rf"^(?:generate|create|write)\s+(?:a\s+|the\s+)?"
+    rf"(?P<format>{_DOCUMENT_FORMATS})\s+"
+    r"(?:document|file|report)"
+    r"(?:\s+(?:named|called)\s+(?P<path>[^\s]+))?"
+    r"(?:\s+(?:about|with|saying|containing)\s+(?P<prompt>.+))?$",
+    re.I,
+)
+_DOCUMENT_GENERATE_PATH = re.compile(
+    rf"^(?:generate|create|write)\s+(?:a\s+|the\s+)?"
+    rf"(?:document|file|report)\s+(?:named|called)\s+"
+    rf"(?P<path>[^\s]+\.(?:{_DOCUMENT_FORMATS}))"
+    r"(?:\s+(?:about|with|saying|containing)\s+(?P<prompt>.+))?$",
+    re.I,
+)
+_DOCUMENT_REPORT = re.compile(
+    r"^(?:create|generate|make|write)\s+(?:a\s+)?(?:document\s+)?report"
+    r"\s+(?:on|from|about)\s+(?P<paths>.+)$",
+    re.I,
+)
+
+
+def _document_path_like(value):
+  text = str(value or "").strip()
+  suffix = text.rsplit(".", 1)[-1].lower() if "." in text else ""
+  return (
+      suffix in _DOCUMENT_FORMATS.split("|")
+      or "/" in text
+      or "\\" in text
+  )
+
+
+def _document_path(value):
+  text = _target_path(_clean(value)).strip(' "\'')
+  text = re.sub(
+      r"^(?:the|this|that|my)\s+(?:document|file|pdf|report|spreadsheet)"
+      r"\s+",
+      "",
+      text,
+      flags=re.I,
+  ).strip()
+  if text.lower() in {
+      "this document",
+      "the document",
+      "this file",
+      "the file",
+      "it",
+  }:
+    return ""
+  return text
+
+
+def recognize_documents(text):
+  """Recognize document reading, indexing, retrieval and extraction."""
+  source = (text or "").strip().rstrip("?.!")
+  lowered = source.lower()
+  if not lowered:
+    return None
+
+  match = _DOCUMENT_INDEX.match(source)
+  if match:
+    path = _document_path(match.group("path") or "")
+    if not path:
+      collection = match.group("collection").lower()
+      path = "Documents" if collection.startswith("document") else "."
+    return Intent("document_index", 0.9, {"path": path})
+  match = _DOCUMENT_INDEX_FILE.match(source)
+  if match:
+    return Intent(
+        "document_index", 0.9, {"path": _document_path(match.group("path"))}
+    )
+
+  if _DOCUMENT_READ_THIS.match(source):
+    return Intent("document_read", 0.9, {"path": ""})
+  match = _DOCUMENT_READ.match(source) or _DOCUMENT_READ_FILE.match(source)
+  if match:
+    path = _document_path(match.group("path"))
+    if path and _document_path_like(path):
+      return Intent("document_read", 0.9, {"path": path})
+
+  match = _DOCUMENT_SUMMARIZE.match(source)
+  if match:
+    body = _clean(match.group("body"))
+    path = _document_path(body)
+    if not path:
+      if body.lower() in {
+          "this document",
+          "the document",
+          "this file",
+          "the file",
+          "it",
+      }:
+        return Intent("document_summarize", 0.9, {"path": ""})
+      return None
+    if _document_path_like(path):
+      return Intent("document_summarize", 0.9, {"path": path})
+    return None
+
+  match = _DOCUMENT_SEARCH.match(source)
+  if match:
+    query = _clean(match.group("query"))
+    if len(query) >= 2:
+      return Intent("document_search", 0.9, {"query": query})
+  match = _DOCUMENT_ASK.match(source) or _DOCUMENT_SAY.match(source)
+  if match:
+    query = _clean(match.group("query"))
+    if len(query) >= 2:
+      return Intent("document_ask", 0.9, {"query": query})
+
+  for pattern, name in (
+      (_DOCUMENT_DATES, "document_dates"),
+      (_DOCUMENT_ACTIONS, "document_actions"),
+      (_DOCUMENT_TABLES, "document_tables"),
+  ):
+    match = pattern.match(source)
+    if match:
+      path = _document_path(match.group("path"))
+      if path and _document_path_like(path):
+        return Intent(name, 0.9, {"path": path})
+      if not path:
+        return Intent(name, 0.9, {"path": ""})
+
+  match = _DOCUMENT_COMPARE.match(source)
+  if match:
+    first = _document_path(match.group("first"))
+    second = _document_path(match.group("second"))
+    if _document_path_like(first) and _document_path_like(second):
+      return Intent(
+          "document_compare",
+          0.9,
+          {"first": first, "second": second},
+      )
+
+  if _DOCUMENT_EXPLAIN_THIS.match(source):
+    return Intent("document_explain", 0.9, {"path": ""})
+  match = _DOCUMENT_EXPLAIN.match(source) or _DOCUMENT_EXPLAIN_FILE.match(
+      source
+  )
+  if match:
+    path = _document_path(match.group("path"))
+    if path and _document_path_like(path):
+      return Intent("document_explain", 0.9, {"path": path})
+
+  match = _DOCUMENT_CONVERT.match(source)
+  if match:
+    source_path = _document_path(match.group("source"))
+    target = _document_path(match.group("target") or "")
+    if source_path and _document_path_like(source_path):
+      entities = {
+          "source": source_path,
+          "format": match.group("format").lower(),
+      }
+      if target:
+        entities["target"] = target
+      return Intent("document_convert", 0.9, entities)
+
+  match = _DOCUMENT_GENERATE.match(source)
+  if match:
+    prompt = _clean(match.group("prompt") or "")
+    path = _document_path(match.group("path") or "")
+    if not prompt:
+      return None
+    return Intent(
+        "document_generate",
+        0.88,
+        {
+            "format": match.group("format").lower(),
+            "path": path,
+            "prompt": prompt,
+        },
+    )
+  match = _DOCUMENT_GENERATE_PATH.match(source)
+  if match:
+    prompt = _clean(match.group("prompt") or "")
+    if not prompt:
+      return None
+    path = _document_path(match.group("path"))
+    return Intent(
+        "document_generate",
+        0.88,
+        {"path": path, "prompt": prompt},
+    )
+
+  match = _DOCUMENT_REPORT.match(source)
+  if match:
+    paths = [
+        _document_path(item)
+        for item in re.split(r"\s+and\s+|\s*\|\s*", match.group("paths"))
+        if _clean(item)
+    ]
+    if paths and all(_document_path_like(path) for path in paths):
+      return Intent("document_report", 0.88, {"paths": "|".join(paths)})
+  return None
+
+
 def recognize_computer(text, allowed_apps=(), allowed_commands=()):
   """Recognize a computer-interaction request and extract its arguments."""
   lowered = text.lower().strip().rstrip("?.!")
@@ -1214,12 +1510,15 @@ class IntentRouter:
         return Intent(name=name, confidence=1.0)
       return None
 
+    intent = recognize_tasks(text)
+    if intent is not None:
+      return intent
+    intent = recognize_documents(text)
+    if intent is not None:
+      return intent
     intent = recognize_computer(
         text, self.allowed_apps, self.allowed_commands
     )
-    if intent is not None:
-      return intent
-    intent = recognize_tasks(text)
     if intent is not None:
       return intent
     intent = recognize_web(text)

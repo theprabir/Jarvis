@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from tools import apps, clipboard, desktop, files, system
+from tools import apps, clipboard, desktop, documents, files, system
 from tools.base import (
     CONFIRM,
     SAFE,
@@ -23,7 +23,7 @@ __all__ = [
 ]
 
 
-def build_registry(settings):
+def build_registry(settings, document_service=None):
   """Build the registry for the current configuration."""
   config = settings.tools
   registry = ToolRegistry()
@@ -218,6 +218,93 @@ def build_registry(settings):
       {"name": str, "path": str},
       required=("name",),
   )
+
+  # Document intelligence
+  if document_service is not None:
+    add(
+        "document_read",
+        "Read and extract text and tables from a document",
+        lambda path: documents.read_document(document_service, path),
+        {"path": str},
+        required=("path",),
+    )
+    add(
+        "document_index",
+        "Index one document for local search",
+        lambda path: documents.index_document(document_service, path),
+        {"path": str},
+        required=("path",),
+        timeout_s=60.0,
+    )
+    add(
+        "document_index_folder",
+        "Index supported documents in a folder",
+        lambda path=".", recursive=True: documents.index_folder(
+            document_service, path, recursive
+        ),
+        {"path": str, "recursive": bool},
+        timeout_s=300.0,
+    )
+    add(
+        "document_search",
+        "Search indexed document passages",
+        lambda query: documents.search_documents(document_service, query),
+        {"query": str},
+        required=("query",),
+    )
+    add(
+        "document_extract",
+        "Extract dates, action items or tables from a document",
+        lambda path, kind="dates": documents.extract_document(
+            document_service, path, kind
+        ),
+        {"path": str, "kind": str},
+        required=("path",),
+    )
+    add(
+        "document_convert",
+        "Convert a document to another supported format",
+        lambda source, format="", target="": documents.convert_document(
+            document_service, source, format, target
+        ),
+        {"source": str, "format": str, "target": str},
+        required=("source",),
+        permission=CONFIRM,
+        timeout_s=60.0,
+        preview=lambda arguments: (
+            f'Convert "{shown(arguments.get("source"))}" to'
+            f' {arguments.get("format") or arguments.get("target") or "a new format"}'
+        ),
+    )
+    add(
+        "document_write",
+        "Create a document in a supported format",
+        lambda path, content, title="": documents.write_document(
+            document_service, path, content, title
+        ),
+        {"path": str, "content": str, "title": str},
+        required=("path", "content"),
+        permission=CONFIRM,
+        timeout_s=60.0,
+        preview=lambda arguments: (
+            f'Create "{shown(arguments.get("path"))}" with'
+            f' {len(arguments.get("content", ""))} characters'
+        ),
+    )
+    add(
+        "document_report",
+        "Create a report from one or more documents",
+        lambda paths, output, title="": documents.report_documents(
+            document_service, paths, output, title
+        ),
+        {"paths": str, "output": str, "title": str},
+        required=("paths", "output"),
+        permission=CONFIRM,
+        timeout_s=120.0,
+        preview=lambda arguments: (
+            f'Write a document report to "{shown(arguments.get("output"))}"'
+        ),
+    )
 
   # Desktop
   add(

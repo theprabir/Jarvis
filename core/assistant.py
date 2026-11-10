@@ -14,6 +14,7 @@ import logging
 import re
 import uuid
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 
 from brain.errors import LLMConnectionError, LLMError, LLMTimeoutError
 from brain.llm_client import get_client
@@ -23,9 +24,16 @@ from core.conversation import (
     Conversation,
     needs_clarification,
 )
+from core.documents import (
+    DocumentError,
+    DocumentService,
+    normalize_text,
+    summarize_document,
+)
 from core.history import HistoryError, HistoryStore
 from core.intents import (
     TOOL_INTENTS,
+    Intent,
     IntentRouter,
     plan_file_actions,
     recognize_tasks,
@@ -84,6 +92,32 @@ SEARCH_RETRY_PROMPT = (
 )
 
 NOT_FOUND_MARKER = "NOT_FOUND"
+
+DOCUMENT_SYSTEM_PROMPT = (
+    "You answer questions using only the document passages below. Give a"
+    " concise, direct answer and cite the passage number you used in square"
+    " brackets, for example [2]. If the passages do not contain the answer,"
+    " reply exactly NOT_FOUND. Do not use outside knowledge."
+)
+
+DOCUMENT_EXPLAIN_PROMPT = (
+    "You explain documents clearly to a non-specialist. Use only the supplied"
+    " text. Start with a one-sentence purpose, then explain the structure and"
+    " the important technical terms, decisions or risks. Keep it under 250"
+    " words and do not invent facts."
+)
+
+DOCUMENT_WRITE_PROMPT = (
+    "You write clear, well-structured documents. Write the requested document"
+    " in plain Markdown with a title and useful headings. Do not mention that"
+    " you are an AI. Return the document text only."
+)
+
+DOCUMENT_DISABLED = "Document intelligence is disabled, sir."
+DOCUMENT_EMPTY = (
+    "I couldn't find anything about that in the indexed documents, sir."
+    " Run /documents index PATH first if the document is not indexed yet."
+)
 
 
 def _has_citation(answer, count):
@@ -160,8 +194,17 @@ HELP_TEXT = (
     " (show, approve, resume, cancel, history), /intent TEXT"
     " shows the detected intent as JSON, /tools lists computer tools, /confirm"
     " and /cancel handle pending actions, /forget deletes saved history after"
-    " confirmation. Timers, reminders, conversions, weather and text tools work"
-    " directly. /help lists this."
+    " confirmation, /documents manages local document reading, indexing,"
+    " search, summarization, comparison and generation. Timers, reminders,"
+    " conversions, weather and text tools work directly. /help lists this."
+)
+
+DOCUMENTS_HELP = (
+    "Document commands: list, index [PATH], search QUERY, ask QUESTION,"
+    " read PATH, summarize PATH, compare A | B, dates PATH, actions PATH,"
+    " tables PATH, explain PATH, convert SOURCE | TARGET_OR_FORMAT,"
+    " create PATH | TEXT, report [OUTPUT | PATH...], remove PATH, last."
+    " Use /documents index Documents to index the Documents folder."
 )
 
 def _normalize_sentence(text):
@@ -253,8 +296,17 @@ class Assistant:
     self._timers = None
     self._tasks = None
     self._notifier = None
+    self._documents = None
+    self._last_document = ""
+    if settings.documents.enabled:
+      try:
+        self._documents = DocumentService(settings.documents, settings.tools)
+      except DocumentError as exc:
+        log.warning("Document intelligence disabled: %s", exc)
     self.registry = (
-        build_registry(settings) if settings.tools.enabled else None
+        build_registry(settings, self._documents)
+        if settings.tools.enabled
+        else None
     )
     self.router = IntentRouter(
         allowed_apps=settings.tools.allowed_apps,
@@ -332,7 +384,7 @@ class Assistant:
         if answer is not None:
           return answer
       else:
-        answer = self._answer_intent(intent)
+        answer = self._answer_intent(intent, text)
         if answer is not None:
           log.info(
               "Intent %s answered locally (confidence %.2f)",
@@ -440,6 +492,9 @@ class Assistant:
       self._tasks.set_notifier(callback)
 
   def close(self):
+    if self._documents is not None:
+      self._documents.close()
+      self._documents = None
     if self._tasks is not None:
       self._tasks.close()
       self._tasks = None
@@ -605,9 +660,13 @@ class Assistant:
   def _run_tool(self, text, intent):
     registry = self.registry
     if registry is None:
+      if intent.name.startswith("document_"):
+        return DOCUMENT_DISABLED
       return None
     tool = registry.get(intent.name)
     if tool is None:
+      if intent.name.startswith("document_"):
+        return DOCUMENT_DISABLED
       log.info("No tool registered for intent %s", intent.name)
       return None
     arguments = dict(intent.entities)
@@ -963,7 +1022,7 @@ class Assistant:
 
   # -- deterministic intents -------------------------------------------
 
-  def _answer_intent(self, intent):
+  def _answer_intent(self, intent, user_text=None):
     if intent.name == "time":
       now = datetime.now()
       return (
@@ -1018,6 +1077,8 @@ class Assistant:
         "timer_cancel",
     }:
       return self._answer_timers(intent)
+    if intent.name.startswith("document_"):
+      return self._answer_document(intent, user_text or "")
     return None
 
   def _answer_conversion(self, intent):
@@ -1141,6 +1202,368 @@ class Assistant:
       target = entries[0]
     timers.cancel(target.id)
     return f"Cancelled {kind} {target.id}, sir."
+
+  # -- document intelligence --------------------------------------------
+
+  def _get_documents(self):
+    if not self._settings.documents.enabled:
+      return None
+    if self._documents is None:
+      try:
+        self._documents = DocumentService(
+            self._settings.documents, self._settings.tools
+        )
+      except DocumentError as exc:
+        log.warning("Document intelligence unavailable: %s", exc)
+    return self._documents
+
+  def _document_target(self, intent):
+    return str(
+        intent.entities.get("path") or self._last_document or ""
+    ).strip()
+
+  def _remember_document(self, service, document):
+    self._last_document = service.relative(document.path)
+
+  def _document_sources(self, service, hits):
+    lines = []
+    for index, hit in enumerate(hits, 1):
+      lines.append(
+          f"[{index}] {hit['title']} - {service.relative(hit['path'])}"
+          f" (passage {hit['ordinal']})"
+      )
+    return "Sources:\n" + "\n".join(lines) if lines else "Sources: none"
+
+  def _document_read(self, service, intent):
+    path = self._document_target(intent)
+    if not path:
+      return "Which document should I read, sir?"
+    try:
+      document = service.read(path)
+    except DocumentError as exc:
+      return f"I couldn't read that document, sir: {exc}."
+    self._remember_document(service, document)
+    text = document.text.strip()
+    limit = 5000
+    suffix = ""
+    if len(text) > limit:
+      suffix = (
+          f"\n\n[Showing {limit} of {len(text)} characters. Use"
+          " /documents summarize for a shorter version.]"
+      )
+      text = text[:limit]
+    return f"{document.title} ({document.format}):\n{text}{suffix}"
+
+  def _document_index(self, service, intent):
+    path = str(intent.entities.get("path") or "Documents").strip()
+    try:
+      target = service.resolve(path)
+      if target.is_dir():
+        result = service.index_folder(str(target))
+        message = (
+            f"Indexed {result['indexed']} document(s) from"
+            f" {service.relative(target)}; skipped {result['skipped']}"
+            f" unchanged and failed {result['failed']}."
+        )
+        if result["errors"]:
+          message += " First problem: " + result["errors"][0]
+        return message
+      result = service.index(path)
+    except DocumentError as exc:
+      return f"I couldn't index that, sir: {exc}."
+    return (
+        f"Indexed {result['title']} into {result['chunks']} searchable"
+        " passage(s)."
+    )
+
+  def _document_search(self, service, intent):
+    query = str(intent.entities.get("query") or "").strip()
+    if not query:
+      return "What should I search the documents for, sir?"
+    try:
+      hits = service.search(query)
+    except DocumentError as exc:
+      return f"I couldn't search the documents, sir: {exc}."
+    if not hits:
+      return DOCUMENT_EMPTY
+    self._last_document = service.relative(hits[0]["path"])
+    lines = []
+    for index, hit in enumerate(hits[:3], 1):
+      text = normalize_text(hit["text"])[:260]
+      lines.append(
+          f"{index}. {hit['title']} (passage {hit['ordinal']}): {text}"
+      )
+    return (
+        f"I found {len(hits)} relevant passage(s):\n"
+        + "\n".join(lines)
+    )
+
+  def _document_ask(self, service, intent):
+    query = str(intent.entities.get("query") or "").strip()
+    if not query:
+      return "What should I ask the documents, sir?"
+    try:
+      context, hits = service.context(query)
+    except DocumentError as exc:
+      return f"I couldn't search the documents, sir: {exc}."
+    if not context:
+      return DOCUMENT_EMPTY
+    self._last_document = service.relative(hits[0]["path"])
+    answer, ok = self._complete(
+        [
+            {"role": "system", "content": DOCUMENT_SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": f"Question: {query}\n\nPassages:\n{context}",
+            },
+        ],
+        self.conversation.max_tokens(),
+    )
+    if not ok:
+      return answer
+    answer = _strip_preamble(answer)
+    if NOT_FOUND_MARKER in answer.upper():
+      return DOCUMENT_EMPTY
+    if not _has_citation(answer, len(hits)) or not _supported(
+        answer, context
+    ):
+      excerpt = normalize_text(hits[0]["text"])[:500]
+      log.info("Document answer had no citation; returning evidence")
+      return (
+          "I found this passage but could not form a grounded answer, sir:\n"
+          f"{excerpt}\n\n"
+          + self._document_sources(service, hits)
+      )
+    return answer + "\n\n" + self._document_sources(service, hits)
+
+  def _document_summarize(self, service, intent):
+    path = self._document_target(intent)
+    if not path:
+      return "Which document should I summarize, sir?"
+    try:
+      document = service.read(path)
+    except DocumentError as exc:
+      return f"I couldn't summarize that document, sir: {exc}."
+    self._remember_document(service, document)
+    return summarize_document(document)
+
+  def _document_compare(self, service, intent):
+    first = str(intent.entities.get("first") or "").strip()
+    second = str(intent.entities.get("second") or "").strip()
+    if not first or not second:
+      return "Which two documents should I compare, sir?"
+    try:
+      result = service.compare(first, second)
+    except DocumentError as exc:
+      return f"I couldn't compare those documents, sir: {exc}."
+    first_doc = result["first"]
+    second_doc = result["second"]
+    lines = [
+        f"Compared {first_doc.title} and {second_doc.title}:"
+        f" {result['similarity']}% line similarity.",
+        f"{first_doc.title}: {first_doc.chars} characters,"
+        f" {len(first_doc.tables)} table(s).",
+        f"{second_doc.title}: {second_doc.chars} characters,"
+        f" {len(second_doc.tables)} table(s).",
+    ]
+    if result["removed_count"]:
+      lines.append(
+          f"Only in the first ({result['removed_count']} line(s)): "
+          + " | ".join(result["removed"][:4])
+      )
+    if result["added_count"]:
+      lines.append(
+          f"Only in the second ({result['added_count']} line(s)): "
+          + " | ".join(result["added"][:4])
+      )
+    if result["only_first"]:
+      lines.append("Key terms only in the first: " + ", ".join(result["only_first"]))
+    if result["only_second"]:
+      lines.append(
+          "Key terms only in the second: " + ", ".join(result["only_second"])
+      )
+    self._last_document = service.relative(second_doc.path)
+    return "\n".join(lines)
+
+  def _document_dates(self, service, intent):
+    path = self._document_target(intent)
+    if not path:
+      return "Which document should I inspect for dates, sir?"
+    try:
+      items = service.dates(path)
+    except DocumentError as exc:
+      return f"I couldn't inspect that document, sir: {exc}."
+    if not items:
+      return "I found no explicit dates in that document, sir."
+    lines = []
+    for item in items[:12]:
+      date = f" ({item['date']})" if item["date"] else ""
+      lines.append(f"- {item['text']}{date}: {item['context']}")
+    return "Dates I found:\n" + "\n".join(lines)
+
+  def _document_actions(self, service, intent):
+    path = self._document_target(intent)
+    if not path:
+      return "Which document should I inspect for action items, sir?"
+    try:
+      items = service.actions(path)
+    except DocumentError as exc:
+      return f"I couldn't inspect that document, sir: {exc}."
+    if not items:
+      return "I found no explicit action items in that document, sir."
+    return "Action items:\n" + "\n".join(f"- {item}" for item in items)
+
+  def _document_tables(self, service, intent):
+    path = self._document_target(intent)
+    if not path:
+      return "Which document should I inspect for tables, sir?"
+    try:
+      tables = service.tables(path)
+    except DocumentError as exc:
+      return f"I couldn't inspect that document, sir: {exc}."
+    if not tables:
+      return "I found no tables in that document, sir."
+    blocks = []
+    for table in tables[:3]:
+      rows = table.markdown().splitlines()[:18]
+      blocks.append(f"{table.name}:\n" + "\n".join(rows))
+    return "\n\n".join(blocks)
+
+  def _document_explain(self, service, intent):
+    path = self._document_target(intent)
+    if not path:
+      return "Which document should I explain, sir?"
+    try:
+      document = service.read(path)
+    except DocumentError as exc:
+      return f"I couldn't explain that document, sir: {exc}."
+    self._remember_document(service, document)
+    excerpt = document.text[:6000]
+    answer, ok = self._complete(
+        [
+            {"role": "system", "content": DOCUMENT_EXPLAIN_PROMPT},
+            {
+                "role": "user",
+                "content": f"Document: {document.title}\n\n{excerpt}",
+            },
+        ],
+        min(600, self.conversation.max_tokens()),
+    )
+    if ok:
+      return _strip_preamble(answer)
+    return (
+        "I couldn't reach my language model, sir. A local summary follows:\n"
+        + summarize_document(document)
+    )
+
+  def _document_generate(self, service, intent, user_text):
+    format = str(intent.entities.get("format") or "").lower()
+    path = str(intent.entities.get("path") or "").strip()
+    prompt = str(intent.entities.get("prompt") or "").strip()
+    if not format:
+      format = Path(path).suffix.lstrip(".").lower()
+    formats = {
+        "pdf": ".pdf",
+        "docx": ".docx",
+        "txt": ".txt",
+        "md": ".md",
+        "markdown": ".md",
+        "csv": ".csv",
+        "xlsx": ".xlsx",
+        "xlsm": ".xlsx",
+    }
+    extension = formats.get(format)
+    if extension is None:
+      return "I can generate PDF, DOCX, TXT, Markdown, CSV or XLSX, sir."
+    if not path:
+      stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+      path = f"generated_{stamp}{extension}"
+    elif Path(path).suffix.lower() not in {
+        ".pdf",
+        ".docx",
+        ".txt",
+        ".md",
+        ".markdown",
+        ".csv",
+        ".xlsx",
+        ".xlsm",
+    }:
+      path += extension
+    if not prompt:
+      return "What should the document contain, sir?"
+    content, ok = self._complete(
+        [
+            {"role": "system", "content": DOCUMENT_WRITE_PROMPT},
+            {"role": "user", "content": prompt},
+        ],
+        min(900, self.conversation.max_tokens() * 2),
+    )
+    if not ok:
+      return content
+    content = _strip_preamble(content)
+    if not content.strip():
+      return "The model returned an empty document, sir."
+    title = Path(path).stem.replace("_", " ").replace("-", " ").title()
+    return self._document_pending(
+        "document_write",
+        {"path": path, "content": content, "title": title},
+        user_text,
+    )
+
+  def _document_report(self, service, intent, user_text):
+    paths = str(intent.entities.get("paths") or "").strip()
+    if not paths:
+      return "Which documents should the report cover, sir?"
+    output = str(intent.entities.get("output") or "document_report.md")
+    return self._document_pending(
+        "document_report",
+        {"paths": paths, "output": output},
+        user_text,
+    )
+
+  def _document_pending(self, name, arguments, user_text):
+    if self.registry is None:
+      return "Document writing needs computer tools enabled, sir."
+    tool = self.registry.get(name)
+    if tool is None:
+      return "Document writing is unavailable, sir."
+    if tool.permission == "confirm":
+      self._pending_tool = (name, arguments, user_text)
+      self._pending_plan = None
+      self._pending_task = None
+      return f"{tool.describe(arguments)}. Please confirm to continue."
+    result = self.registry.execute(name, arguments)
+    return result.text
+
+  def _answer_document(self, intent, user_text):
+    service = self._get_documents()
+    if service is None:
+      return DOCUMENT_DISABLED
+    if intent.name == "document_read":
+      return self._document_read(service, intent)
+    if intent.name == "document_index":
+      return self._document_index(service, intent)
+    if intent.name == "document_search":
+      return self._document_search(service, intent)
+    if intent.name == "document_ask":
+      return self._document_ask(service, intent)
+    if intent.name == "document_summarize":
+      return self._document_summarize(service, intent)
+    if intent.name == "document_compare":
+      return self._document_compare(service, intent)
+    if intent.name == "document_dates":
+      return self._document_dates(service, intent)
+    if intent.name == "document_actions":
+      return self._document_actions(service, intent)
+    if intent.name == "document_tables":
+      return self._document_tables(service, intent)
+    if intent.name == "document_explain":
+      return self._document_explain(service, intent)
+    if intent.name == "document_generate":
+      return self._document_generate(service, intent, user_text)
+    if intent.name == "document_report":
+      return self._document_report(service, intent, user_text)
+    return None
 
   def _answer_date(self, intent):
     iso = intent.entities.get("date")
@@ -1602,11 +2025,169 @@ class Assistant:
       return self._memory_command(parts[1:])
     if command == "/tasks":
       return self._tasks_command(parts[1:])
+    if command in {"/documents", "/docs"}:
+      return self._documents_command(text)
     if command == "/forget":
       return self._forget(argument)
     if command == "/help":
       return HELP_TEXT
     return f"Unknown command {command}. Try /help."
+
+  # -- document commands ------------------------------------------------
+
+  @staticmethod
+  def _command_value(value):
+    text = str(value or "").strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
+      return text[1:-1].strip()
+    return text
+
+  def _documents_command(self, text):
+    service = self._get_documents()
+    if service is None:
+      return DOCUMENT_DISABLED
+    body = text.split(maxsplit=1)[1].strip() if len(text.split()) > 1 else ""
+    if not body or body.lower() in {"help", "?"}:
+      return DOCUMENTS_HELP
+    parts = body.split(maxsplit=1)
+    action = parts[0].lower()
+    rest = parts[1].strip() if len(parts) > 1 else ""
+    if action in {"list", "indexed"}:
+      try:
+        rows = service.list(50)
+      except DocumentError as exc:
+        return f"I couldn't read the document index, sir: {exc}."
+      if not rows:
+        return "The document index is empty, sir. Use /documents index PATH."
+      lines = [
+          f"- {row['title']} ({row['format']}, {row['chunks']} passage(s))"
+          f" [{service.relative(row['path'])}]"
+          for row in rows
+      ]
+      return f"Indexed documents:\n" + "\n".join(lines)
+    if action == "index":
+      path = self._command_value(rest) or "Documents"
+      return self._document_index(
+          service, Intent("document_index", 1.0, {"path": path})
+      )
+    if action == "search":
+      query = self._command_value(rest)
+      if not query:
+        return "Usage: /documents search QUERY"
+      return self._document_search(
+          service, Intent("document_search", 1.0, {"query": query})
+      )
+    if action == "ask":
+      query = self._command_value(rest)
+      if not query:
+        return "Usage: /documents ask QUESTION"
+      return self._document_ask(
+          service, Intent("document_ask", 1.0, {"query": query})
+      )
+    if action in {
+        "read",
+        "summarize",
+        "dates",
+        "actions",
+        "tables",
+        "explain",
+    }:
+      path = self._command_value(rest)
+      return self._answer_document(
+          Intent("document_" + action, 1.0, {"path": path}), text
+      )
+    if action == "compare":
+      pieces = [self._command_value(item) for item in rest.split("|")]
+      if len(pieces) == 1 and " and " in rest:
+        pieces = [self._command_value(item) for item in rest.split(" and ", 1)]
+      if len(pieces) != 2 or not all(pieces):
+        return "Usage: /documents compare A | B"
+      return self._answer_document(
+          Intent(
+              "document_compare",
+              1.0,
+              {"first": pieces[0], "second": pieces[1]},
+          ),
+          text,
+      )
+    if action == "convert":
+      pieces = [self._command_value(item) for item in rest.split("|")]
+      if len(pieces) != 2 or not all(pieces):
+        return "Usage: /documents convert SOURCE | TARGET_OR_FORMAT"
+      source, second = pieces
+      suffix = Path(second).suffix.lower()
+      try:
+        if suffix in {
+            ".pdf",
+            ".docx",
+            ".txt",
+            ".md",
+            ".markdown",
+            ".csv",
+            ".xlsx",
+            ".xlsm",
+        }:
+          result = service.convert(source, target=second)
+        elif second.lower() in {
+            "pdf",
+            "docx",
+            "txt",
+            "md",
+            "markdown",
+            "csv",
+            "xlsx",
+        }:
+          result = service.convert(source, format=second.lower())
+        else:
+          return "That target format is not supported, sir."
+      except DocumentError as exc:
+        return f"I couldn't convert that document, sir: {exc}."
+      return f"Converted {service.relative(result['source'])} to {result['path']}."
+    if action == "create":
+      pieces = rest.split("|", 1)
+      path = self._command_value(pieces[0])
+      content = pieces[1].strip() if len(pieces) > 1 else ""
+      if not path:
+        return "Usage: /documents create PATH | TEXT"
+      try:
+        result = service.write(path, content, Path(path).stem.title())
+      except DocumentError as exc:
+        return f"I couldn't create that document, sir: {exc}."
+      return f"Created {result['path']} with {result['chars']} characters."
+    if action == "report":
+      pieces = [
+          self._command_value(item)
+          for item in rest.split("|")
+          if self._command_value(item)
+      ]
+      if not pieces:
+        return "Usage: /documents report [OUTPUT | PATH...]"
+      if len(pieces) == 1:
+        output, paths = "document_report.md", pieces
+      else:
+        output, paths = pieces[0], pieces[1:]
+      try:
+        result = service.report(paths, output)
+      except DocumentError as exc:
+        return f"I couldn't create that report, sir: {exc}."
+      return (
+          f"Created a report on {result['documents']} document(s) at"
+          f" {result['path']}."
+      )
+    if action == "remove":
+      path = self._command_value(rest)
+      if not path:
+        return "Usage: /documents remove PATH"
+      try:
+        service.remove(path)
+      except DocumentError as exc:
+        return f"I couldn't remove that document, sir: {exc}."
+      return f"Removed {path} from the document index, sir."
+    if action == "last":
+      if not self._last_document:
+        return "I have not opened a document yet, sir."
+      return f"The last document I used was {self._last_document}."
+    return DOCUMENTS_HELP
 
   def _tools(self):
     if self.registry is None:

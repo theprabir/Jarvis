@@ -52,9 +52,16 @@ from core.memory import (
     MemoryStoreError,
     classify as classify_memory,
 )
+from core.productivity import (
+    ProductivityError,
+    ProductivityService,
+    format_todo,
+    parse_todo_input,
+    parse_when,
+)
 from core.tasks import TaskEngine, TaskError
 from core.timers import TimerError, TimerService
-from core.utilities import humanize_duration
+from core.utilities import humanize_duration, parse_duration
 from tools import build_registry
 from tools.base import shorten
 from web.base import STOPWORDS, SearchError, words
@@ -196,7 +203,8 @@ HELP_TEXT = (
     " and /cancel handle pending actions, /forget deletes saved history after"
     " confirmation, /documents manages local document reading, indexing,"
     " search, summarization, comparison and generation. Timers, reminders,"
-    " conversions, weather and text tools work directly. /help lists this."
+    " conversions, weather and text tools work directly. /todo manages local"
+    " to-dos and deadlines. /help lists this."
 )
 
 DOCUMENTS_HELP = (
@@ -205,6 +213,14 @@ DOCUMENTS_HELP = (
     " tables PATH, explain PATH, convert SOURCE | TARGET_OR_FORMAT,"
     " create PATH | TEXT, report [OUTPUT | PATH...], remove PATH, last."
     " Use /documents index Documents to index the Documents folder."
+)
+
+TODO_DISABLED = "Productivity is disabled, sir."
+
+TODO_HELP = (
+    "To-do commands: list, all, add TEXT [due WHEN] [priority LEVEL]"
+    " [repeat daily|weekly|monthly], show ID, done ID, snooze ID [MINUTES],"
+    " edit ID title|due|remind|priority|repeat VALUE, remove ID."
 )
 
 def _normalize_sentence(text):
@@ -295,6 +311,7 @@ class Assistant:
     self._weather = None
     self._timers = None
     self._tasks = None
+    self._productivity = None
     self._notifier = None
     self._documents = None
     self._last_document = ""
@@ -492,6 +509,9 @@ class Assistant:
       self._tasks.set_notifier(callback)
 
   def close(self):
+    if self._productivity is not None:
+      self._productivity.close()
+      self._productivity = None
     if self._documents is not None:
       self._documents.close()
       self._documents = None
@@ -539,6 +559,21 @@ class Assistant:
         log.error("Timers unavailable: %s", exc)
         return None
     return self._timers
+
+  def _get_productivity(self):
+    """Build the to-do service lazily and share the timer scheduler."""
+    if not self._settings.productivity.enabled:
+      return None
+    if self._productivity is None:
+      timers = self._get_timers()
+      try:
+        self._productivity = ProductivityService(
+            self._settings.productivity, timers=timers
+        )
+      except ProductivityError as exc:
+        log.error("Productivity unavailable: %s", exc)
+        return None
+    return self._productivity
 
   # -- web search -------------------------------------------------------
 
@@ -1077,6 +1112,8 @@ class Assistant:
         "timer_cancel",
     }:
       return self._answer_timers(intent)
+    if intent.name.startswith("todo_"):
+      return self._answer_todo(intent)
     if intent.name.startswith("document_"):
       return self._answer_document(intent, user_text or "")
     return None
@@ -1202,6 +1239,255 @@ class Assistant:
       target = entries[0]
     timers.cancel(target.id)
     return f"Cancelled {kind} {target.id}, sir."
+
+  # -- productivity to-dos ----------------------------------------------
+
+  @staticmethod
+  def _todo_id(value):
+    text = str(value or "").strip().lstrip("#")
+    return int(text) if text.isdigit() else None
+
+  def _todo_command(self, text):
+    service = self._get_productivity()
+    if service is None:
+      return TODO_DISABLED
+    parts = text.split(maxsplit=1)
+    body = parts[1].strip() if len(parts) > 1 else ""
+    if not body or body.lower() in {"help", "?"}:
+      return TODO_HELP
+    action, _separator, rest = body.partition(" ")
+    action = action.lower()
+    rest = rest.strip()
+    if action in {"list", "ls", "open"}:
+      return self._todo_list_text(service, status="open")
+    if action in {"all", "history"}:
+      return self._todo_list_text(service, status=None)
+    if action == "add":
+      return self._todo_add_text(service, rest)
+    if action in {"show", "detail", "details", "get"}:
+      return self._todo_show(service, rest)
+    if action in {"done", "complete", "finish"}:
+      return self._todo_done(service, rest)
+    if action in {"remove", "delete", "rm"}:
+      return self._todo_delete(service, rest)
+    if action == "snooze":
+      return self._todo_snooze(service, rest)
+    if action == "edit":
+      return self._todo_edit(service, rest)
+    return TODO_HELP
+
+  def _todo_add_text(self, service, text):
+    parsed = parse_todo_input(text)
+    if not parsed.get("title"):
+      return "What should the to-do say, sir?"
+    return self._todo_create(service, parsed)
+
+  def _todo_create(self, service, parsed):
+    try:
+      item = service.add(
+          parsed.get("title", ""),
+          priority=parsed.get("priority"),
+          due_at=parsed.get("due_at"),
+          remind_at=parsed.get("remind_at"),
+          recurrence=parsed.get("recurrence", "none"),
+      )
+    except ProductivityError as exc:
+      return f"I couldn't add that to-do, sir: {exc}."
+    return self._todo_added_text(item)
+
+  def _todo_added_text(self, item):
+    message = f"To-do #{item.id} added: {item.title}."
+    if item.due_at is not None:
+      message += f" Due {item.due_at.strftime('%A %d %B at %H:%M')}."
+    if item.remind_at is not None and item.remind_at != item.due_at:
+      message += (
+          f" I'll remind you at"
+          f" {item.remind_at.strftime('%H:%M')}."
+      )
+    if item.priority != "normal":
+      message += f" Priority: {item.priority}."
+    if item.recurrence != "none":
+      message += f" Repeats {item.recurrence}."
+    return message
+
+  def _todo_list_text(self, service, status="open"):
+    try:
+      rows = service.list(status=status, limit=20)
+    except ProductivityError as exc:
+      return f"I couldn't read the to-do list, sir: {exc}."
+    if not rows:
+      if status == "open":
+        return "You have no open to-dos, sir."
+      return "You have no to-dos yet, sir."
+    heading = "Open to-dos:" if status == "open" else "To-dos:"
+    return heading + "\n" + "\n".join(format_todo(item) for item in rows)
+
+  def _todo_show(self, service, text):
+    identifier = self._todo_id(text)
+    if identifier is None:
+      return "Usage: /todo show ID"
+    try:
+      item = service.get(identifier)
+    except ProductivityError as exc:
+      return f"I couldn't read that to-do, sir: {exc}."
+    if item is None:
+      return "There is no to-do with that id, sir."
+    lines = [
+        f"To-do #{item.id}: {item.title}",
+        f"Status: {item.status}",
+        f"Priority: {item.priority}",
+    ]
+    if item.details:
+      lines.append(f"Details: {item.details}")
+    if item.due_at is not None:
+      lines.append(f"Due: {item.due_at.strftime('%A %d %B %Y at %H:%M')}")
+    if item.remind_at is not None:
+      lines.append(
+          f"Reminder: {item.remind_at.strftime('%A %d %B at %H:%M')}"
+      )
+    if item.recurrence != "none":
+      lines.append(f"Repeats: {item.recurrence}")
+    if item.parent_id:
+      lines.append(f"Previous occurrence: #{item.parent_id}")
+    return "\n".join(lines)
+
+  def _todo_done(self, service, text):
+    identifier = self._todo_id(text)
+    if identifier is None:
+      return "Usage: /todo done ID"
+    try:
+      done, next_item = service.complete(identifier)
+    except ProductivityError as exc:
+      return f"I couldn't complete that to-do, sir: {exc}."
+    message = f"To-do #{done.id} completed: {done.title}."
+    if next_item is not None:
+      message += (
+          f" Next occurrence: #{next_item.id} due"
+          f" {next_item.due_at.strftime('%A %d %B at %H:%M')}."
+      )
+    return message
+
+  def _todo_delete(self, service, text):
+    identifier = self._todo_id(text)
+    if identifier is None:
+      return "Usage: /todo remove ID"
+    try:
+      item = service.delete(identifier)
+    except ProductivityError as exc:
+      return f"I couldn't remove that to-do, sir: {exc}."
+    return f"To-do #{item.id} removed: {item.title}."
+
+  def _todo_snooze(self, service, text):
+    parts = text.split(maxsplit=1)
+    identifier = self._todo_id(parts[0] if parts else "")
+    if identifier is None:
+      return "Usage: /todo snooze ID [MINUTES]"
+    duration = parts[1].strip() if len(parts) > 1 else "10 minutes"
+    seconds = parse_duration(duration)
+    if not seconds:
+      return "Usage: /todo snooze ID [MINUTES]"
+    try:
+      item = service.snooze(identifier, max(1, seconds // 60))
+    except ProductivityError as exc:
+      return f"I couldn't snooze that to-do, sir: {exc}."
+    return (
+        f"To-do #{item.id} snoozed until"
+        f" {item.remind_at.strftime('%A %d %B at %H:%M')}."
+    )
+
+  def _todo_edit(self, service, text):
+    parts = text.split(maxsplit=2)
+    if len(parts) < 3:
+      return "Usage: /todo edit ID title|due|remind|priority|repeat VALUE"
+    identifier = self._todo_id(parts[0])
+    field = parts[1].lower()
+    value = parts[2].strip()
+    if identifier is None:
+      return "Usage: /todo edit ID title|due|remind|priority|repeat VALUE"
+    try:
+      item = service.get(identifier)
+    except ProductivityError as exc:
+      return f"I couldn't read that to-do, sir: {exc}."
+    if item is None:
+      return "There is no to-do with that id, sir."
+    fields = {}
+    if field == "title":
+      fields["title"] = value
+    elif field in {"due", "deadline"}:
+      when = parse_when(value, prefer_future=False)
+      if when is None:
+        return "I couldn't understand that due date, sir."
+      fields["due_at"] = when
+      if item.remind_at is None or item.remind_at == item.due_at:
+        fields["remind_at"] = when
+    elif field in {"remind", "reminder"}:
+      when = parse_when(value, prefer_future=True)
+      if when is None:
+        return "I couldn't understand that reminder time, sir."
+      fields["remind_at"] = when
+    elif field == "priority":
+      fields["priority"] = value
+    elif field in {"repeat", "recurrence"}:
+      fields["recurrence"] = value
+    elif field == "clear" and value.lower() in {"due", "deadline"}:
+      fields["due_at"] = None
+      fields["remind_at"] = None
+    elif field == "clear" and value.lower() in {"remind", "reminder"}:
+      fields["remind_at"] = None
+    else:
+      return "Usage: /todo edit ID title|due|remind|priority|repeat VALUE"
+    try:
+      item = service.update(identifier, **fields)
+    except ProductivityError as exc:
+      return f"I couldn't update that to-do, sir: {exc}."
+    return self._todo_show(service, str(item.id))
+
+  @staticmethod
+  def _todo_intent_datetime(value):
+    if not value:
+      return None
+    try:
+      return datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+      return None
+
+  def _answer_todo(self, intent):
+    service = self._get_productivity()
+    if service is None:
+      return TODO_DISABLED
+    if intent.name == "todo_add":
+      parsed = {
+          "title": intent.entities.get("title", ""),
+          "priority": intent.entities.get("priority"),
+          "due_at": self._todo_intent_datetime(
+              intent.entities.get("due_at")
+          ),
+          "remind_at": self._todo_intent_datetime(
+              intent.entities.get("remind_at")
+          ),
+          "recurrence": intent.entities.get("recurrence", "none"),
+      }
+      return self._todo_create(service, parsed)
+    if intent.name == "todo_list":
+      return self._todo_list_text(service, status="open")
+    identifier = int(intent.entities.get("id") or 0)
+    if intent.name == "todo_show":
+      return self._todo_show(service, str(identifier))
+    if intent.name == "todo_done":
+      return self._todo_done(service, str(identifier))
+    if intent.name == "todo_delete":
+      return self._todo_delete(service, str(identifier))
+    if intent.name == "todo_snooze":
+      minutes = int(intent.entities.get("minutes") or 10)
+      try:
+        item = service.snooze(identifier, minutes)
+      except ProductivityError as exc:
+        return f"I couldn't snooze that to-do, sir: {exc}."
+      return (
+          f"To-do #{item.id} snoozed until"
+          f" {item.remind_at.strftime('%A %d %B at %H:%M')}."
+      )
+    return None
 
   # -- document intelligence --------------------------------------------
 
@@ -2057,6 +2343,8 @@ class Assistant:
       return "Cancelled, sir."
     if command == "/memory":
       return self._memory_command(parts[1:])
+    if command in {"/todo", "/todos"}:
+      return self._todo_command(text)
     if command == "/tasks":
       return self._tasks_command(parts[1:])
     if command in {"/documents", "/docs"}:

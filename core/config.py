@@ -159,6 +159,20 @@ class TasksConfig:
 
 
 @dataclass(frozen=True)
+class ProductivityConfig:
+  enabled: bool = True
+  # To-do items share the assistant database but use their own table.
+  db: str = "data/jarvis.db"
+  default_priority: str = "normal"
+  max_items: int = 2000
+
+  @property
+  def resolved_db(self) -> Path:
+    path = Path(self.db)
+    return path if path.is_absolute() else (PROJECT_ROOT / path).resolve()
+
+
+@dataclass(frozen=True)
 class DocumentsConfig:
   enabled: bool = True
   # Document metadata and chunk index share the assistant database.
@@ -252,6 +266,7 @@ class Settings:
   conversation: ConversationConfig
   tools: ToolsConfig
   tasks: TasksConfig
+  productivity: ProductivityConfig
   documents: DocumentsConfig
   memory: MemoryConfig
   weather: WeatherConfig
@@ -385,6 +400,21 @@ def _validate(settings):
   _require(
       isinstance(tasks.auto_resume, bool),
       "[tasks] auto_resume must be true or false",
+  )
+
+  productivity = settings.productivity
+  _require(bool(productivity.db), "[productivity] db must not be empty")
+  _require(
+      productivity.default_priority in {"low", "normal", "high", "critical"},
+      "[productivity] default_priority must be low, normal, high or critical",
+  )
+  _require(
+      1 <= productivity.max_items <= 10_000,
+      "[productivity] max_items must be 1-10000",
+  )
+  _require(
+      isinstance(productivity.enabled, bool),
+      "[productivity] enabled must be true or false",
   )
 
   documents = settings.documents
@@ -559,6 +589,11 @@ def load_settings(path=None):
       ),
       tools=_build(ToolsConfig, raw.get("tools", {}), "tools"),
       tasks=_build(TasksConfig, raw.get("tasks", {}), "tasks"),
+      productivity=_build(
+          ProductivityConfig,
+          raw.get("productivity", {}),
+          "productivity",
+      ),
       documents=_build(
           DocumentsConfig, raw.get("documents", {}), "documents"
       ),

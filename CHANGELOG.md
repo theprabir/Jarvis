@@ -7,6 +7,62 @@ all feature sets in a phase increments the middle number and resets the patch.
 feature sets in this level increment the patch (v0.2.1, …), and completing the
 level increments the middle number.
 
+## Unreleased — 4.11 Productivity Management (M1)
+
+**Local to-dos, deadlines and recurring tasks**
+
+### Implemented functionality
+
+- **Separate productivity namespace** — to-dos live in a new `todo_items`
+  table and use `/todo`; the existing durable execution plans keep `tasks`
+  and `/tasks` unchanged.
+- **To-do management** — add, list, show, edit, complete and remove local
+  items with `low`, `normal`, `high` or `critical` priority.
+- **Deadlines and reminders** — a future due date schedules a notification
+  through the existing timer service. Reminders survive restarts, missed
+  reminders are reported on the next start, and completing or removing a
+  to-do cancels its pending reminder.
+- **Recurrence** — daily, weekly and monthly to-dos create exactly one next
+  occurrence when completed, linked through `parent_id`; the next due date is
+  always in the future.
+- **Snooze and edit** — `/todo snooze ID [MINUTES]` reschedules the reminder;
+  `/todo edit ID due|remind|priority|repeat|title VALUE` updates fields and
+  keeps the scheduler in sync.
+- **Natural language** — `add a to-do to ...`, `what's on my todo list`,
+  `mark todo ID done`, `show todo ID`, `snooze todo ID for N minutes` and
+  `remove todo ID` route deterministically without calling the model.
+- **Backward-compatible reminder migration** — existing `reminders` tables
+  gain `source` and `source_id` columns through a guarded `ALTER TABLE`; old
+  reminders keep working.
+
+### Files
+
+- `core/productivity.py` — SQLite to-do store, recurrence, parsing and
+  reminder scheduling rules.
+- `core/timers.py` — source-aware reminders, legacy schema migration and
+  `cancel_source`, preserving the single scheduler thread.
+- `core/intents.py`, `core/assistant.py` — `/todo` commands, natural intent
+  routing, replies and edit/snooze handling.
+- `core/config.py`, `config/settings.toml` — validated `[productivity]`
+  settings.
+- `tests/test_productivity.py` — 23 offline tests for parsing, CRUD,
+  recurrence, reminders, restart/missed recovery and assistant flows.
+- `README.md` — productivity commands, configuration and current 4.11 status.
+
+### Bug fixes
+
+- **Date-only reminders** — a phrase such as `tomorrow` no longer rolls to
+  the day after tomorrow when the default 9:00 time has already passed;
+  `tonight` now means 20:00 on the current day.
+
+### Testing
+
+- `python -m compileall -q core tools config tests main.py` passed.
+- `python -m unittest discover -s tests` passed: **400 tests**.
+- Focused productivity suite: **23 tests, OK**.
+- Measured added RSS for the service and 200 in-memory to-dos in the test
+  process: **~1.0 MB**; no second scheduler thread is created.
+
 ## v0.2.5 — 2026-11-10
 
 **OCR confidence and partial-recognition warnings**

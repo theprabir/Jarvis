@@ -17,6 +17,7 @@ from core.calculator import CalculationError, evaluate
 from core.dates import find_date_reference
 
 from core.memory import classify as classify_memory
+from core.productivity import parse_todo_input
 from core.utilities import (
     UtilityError,
     convert,
@@ -96,6 +97,12 @@ CONVERSATION_INTENTS = frozenset(
         "reminder_set",
         "timer_list",
         "timer_cancel",
+        "todo_add",
+        "todo_list",
+        "todo_show",
+        "todo_done",
+        "todo_delete",
+        "todo_snooze",
         "task_organize",
         "task_plan",
         "task_list",
@@ -138,6 +145,8 @@ COMMANDS = frozenset(
         "cancel",
         "tools",
         "tasks",
+        "todo",
+        "todos",
         "documents",
         "docs",
     }
@@ -340,6 +349,46 @@ _TIMER_CANCEL = re.compile(
     r"(?P<kind>timers?|reminders?)(?:\s+(?P<id>\d+))?$"
 )
 
+_TODO_ADD = re.compile(
+    r"^(?:please\s+)?(?:add|create|make)\s+(?:a\s+|an\s+)?(?:new\s+)?"
+    r"(?:to-?do|todo item|to-?do item)\s*[:\-]?\s*(?P<body>.+)$",
+    re.I,
+)
+_TODO_ADD_TO = re.compile(
+    r"^(?:please\s+)?(?:add|put)\s+(?P<body>.+?)\s+"
+    r"(?:to|on)\s+(?:my\s+)?(?:to-?do|todo)\s+list$",
+    re.I,
+)
+_TODO_PREFIX = re.compile(r"^to-?do\s*[:\-]\s*(?P<body>.+)$", re.I)
+_TODO_LIST = re.compile(
+    r"^(?:list|show|what(?:'s| is)? on)\s+(?:my\s+)?"
+    r"(?:to-?dos?|to-?do list|todo list)$"
+    r"|^(?:what|which)\s+(?:are\s+)?(?:my\s+)?(?:to-?dos?|todo list)$",
+    re.I,
+)
+_TODO_DONE = re.compile(
+    r"^(?:(?:mark|set)\s+)?(?:to-?do|todo)\s+#?(?P<id>\d+)\s+"
+    r"(?:as\s+)?(?:done|complete[d]?)$",
+    re.I,
+)
+_TODO_DONE_ALT = re.compile(
+    r"^(?:complete|finish|done)\s+(?:to-?do|todo)\s+#?(?P<id>\d+)$",
+    re.I,
+)
+_TODO_SHOW = re.compile(
+    r"^(?:show|describe|details?|open)\s+(?:to-?do|todo)\s+#?(?P<id>\d+)$",
+    re.I,
+)
+_TODO_DELETE = re.compile(
+    r"^(?:delete|remove|cancel)\s+(?:to-?do|todo)\s+#?(?P<id>\d+)$",
+    re.I,
+)
+_TODO_SNOOZE = re.compile(
+    r"^snooze\s+(?:to-?do|todo)\s+#?(?P<id>\d+)"
+    r"(?:\s+(?:for|by)\s+(?P<duration>.+))?$",
+    re.I,
+)
+
 
 def recognize_utilities(text):
   """Recognize conversions, text operations and size formatting."""
@@ -462,6 +511,55 @@ def recognize_timers(text):
             "seconds": seconds,
             "label": _clean(match.groupdict().get("label") or ""),
         },
+    )
+  return None
+
+
+def recognize_todo(text):
+  """Recognize explicit productivity to-dos, never task-plan controls."""
+  source = (text or "").strip().rstrip("?.!")
+  if not source:
+    return None
+  match = _TODO_ADD.match(source)
+  if match is None:
+    match = _TODO_ADD_TO.match(source)
+  if match is None:
+    match = _TODO_PREFIX.match(source)
+  if match is not None:
+    parsed = parse_todo_input(match.group("body"))
+    if not parsed.get("title"):
+      return None
+    entities = {"title": parsed["title"]}
+    if parsed.get("priority"):
+      entities["priority"] = parsed["priority"]
+    if parsed.get("due_at"):
+      entities["due_at"] = parsed["due_at"].isoformat(timespec="minutes")
+    if parsed.get("remind_at"):
+      entities["remind_at"] = parsed["remind_at"].isoformat(
+          timespec="minutes"
+      )
+    if parsed.get("recurrence") != "none":
+      entities["recurrence"] = parsed["recurrence"]
+    return Intent("todo_add", 0.92, entities)
+
+  if _TODO_LIST.match(source):
+    return Intent("todo_list", 0.9, {})
+  for pattern, name in (
+      (_TODO_DONE, "todo_done"),
+      (_TODO_DONE_ALT, "todo_done"),
+      (_TODO_SHOW, "todo_show"),
+      (_TODO_DELETE, "todo_delete"),
+  ):
+    match = pattern.match(source)
+    if match:
+      return Intent(name, 0.9, {"id": int(match.group("id"))})
+  match = _TODO_SNOOZE.match(source)
+  if match:
+    seconds = parse_duration(match.group("duration") or "") or 600
+    return Intent(
+        "todo_snooze",
+        0.9,
+        {"id": int(match.group("id")), "minutes": max(1, seconds // 60)},
     )
   return None
 
@@ -1511,6 +1609,9 @@ class IntentRouter:
       return None
 
     intent = recognize_tasks(text)
+    if intent is not None:
+      return intent
+    intent = recognize_todo(text)
     if intent is not None:
       return intent
     intent = recognize_documents(text)

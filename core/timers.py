@@ -24,7 +24,9 @@ CREATE TABLE IF NOT EXISTS reminders (
   text TEXT NOT NULL,
   due_at TEXT NOT NULL,
   created_at TEXT NOT NULL,
-  fired INTEGER NOT NULL DEFAULT 0
+  fired INTEGER NOT NULL DEFAULT 0,
+  source TEXT NOT NULL DEFAULT '',
+  source_id INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_reminders_due ON reminders (fired, due_at);
 """
@@ -43,6 +45,8 @@ class Scheduled:
   label: str
   due_at: datetime
   persistent: bool = False
+  source: str = ""
+  source_id: int | None = None
 
   @property
   def remaining_s(self):
@@ -75,16 +79,31 @@ class TimerService:
       path.parent.mkdir(parents=True, exist_ok=True)
       self._db = sqlite3.connect(str(path), check_same_thread=False)
       self._db.executescript(SCHEMA)
+      self._migrate()
       self._db.commit()
     except (OSError, sqlite3.Error) as exc:
       raise TimerError(f"Could not open {path}: {exc}") from exc
     self._load_reminders()
 
+  def _migrate(self):
+    """Add source metadata to reminder tables created before v0.2.6."""
+    columns = {
+        row[1]
+        for row in self._db.execute("PRAGMA table_info(reminders)").fetchall()
+    }
+    if "source" not in columns:
+      self._db.execute(
+          "ALTER TABLE reminders ADD COLUMN source TEXT NOT NULL DEFAULT ''"
+      )
+    if "source_id" not in columns:
+      self._db.execute(
+          "ALTER TABLE reminders ADD COLUMN source_id INTEGER"
+      )
+
   def _load_reminders(self):
-    now = datetime.now().isoformat(timespec="seconds")
     try:
       rows = self._db.execute(
-          "SELECT id, text, due_at FROM reminders"
+          "SELECT id, text, due_at, source, source_id FROM reminders"
           " WHERE fired = 0 ORDER BY due_at"
       ).fetchall()
     except sqlite3.Error as exc:
@@ -98,11 +117,11 @@ class TimerService:
         self._db.execute(
             "UPDATE reminders SET fired = 1 WHERE id = ?", (row[0],)
         )
-        self._missed.append(f"Reminder ({row[1]}).")
+        self._missed.append(self._notification_text(row[3], row[1]))
         continue
       self._timers[("reminder", row[0])] = Scheduled(
           id=row[0], kind="reminder", label=row[1], due_at=due,
-          persistent=True,
+          persistent=True, source=row[3] or "", source_id=row[4],
       )
       self._next_id = max(self._next_id, row[0] + 1)
     if rows:
@@ -127,7 +146,7 @@ class TimerService:
       self._timers[("timer", timer_id)] = entry
     return entry
 
-  def add_reminder(self, due_at, text):
+  def add_reminder(self, due_at, text, source="", source_id=None):
     body = " ".join(str(text or "").split())
     if not body:
       raise TimerError("a reminder needs some text")
@@ -138,10 +157,12 @@ class TimerService:
       raise TimerError("that time has already passed")
     try:
       cursor = self._db.execute(
-          "INSERT INTO reminders (text, due_at, created_at, fired)"
-          " VALUES (?, ?, ?, 0)",
+          "INSERT INTO reminders"
+          " (text, due_at, created_at, fired, source, source_id)"
+          " VALUES (?, ?, ?, 0, ?, ?)",
           (body, due_at.isoformat(timespec="seconds"),
-           now.isoformat(timespec="seconds")),
+           now.isoformat(timespec="seconds"), str(source or ""),
+           int(source_id) if source_id is not None else None),
       )
       self._db.commit()
     except sqlite3.Error as exc:
@@ -152,6 +173,8 @@ class TimerService:
         label=body,
         due_at=due_at,
         persistent=True,
+        source=str(source or ""),
+        source_id=int(source_id) if source_id is not None else None,
     )
     with self._lock:
       self._timers[("reminder", entry.id)] = entry
@@ -213,6 +236,26 @@ class TimerService:
         log.debug("Could not commit cancellations", exc_info=True)
     return len(entries)
 
+  def cancel_source(self, source, source_id):
+    """Cancel persisted reminders belonging to one productivity item."""
+    removed = []
+    with self._lock:
+      for key, entry in list(self._timers.items()):
+        if entry.source == source and entry.source_id == source_id:
+          removed.append(entry)
+          self._timers.pop(key, None)
+    if removed and self._db is not None:
+      try:
+        for entry in removed:
+          self._db.execute(
+              "UPDATE reminders SET fired = 1 WHERE id = ?", (entry.id,)
+          )
+        self._db.commit()
+      except sqlite3.Error as exc:
+        log.warning("Could not cancel reminders for %s %s: %s",
+                    source, source_id, exc)
+    return len(removed)
+
   def poll(self, now=None):
     """Return due notification texts and remove those entries."""
     now = now or datetime.now()
@@ -228,7 +271,9 @@ class TimerService:
           self._timers.pop(key, None)
     for entry in due:
       if entry.kind == "reminder":
-        messages.append(f"Reminder: {entry.label}.")
+        messages.append(
+            self._notification_text(entry.source, entry.label)
+        )
         if self._db is not None:
           try:
             self._db.execute(
@@ -242,6 +287,12 @@ class TimerService:
       else:
         messages.append("Your timer is finished, sir.")
     return messages
+
+  @staticmethod
+  def _notification_text(source, label):
+    if source == "todo":
+      return f"To-do: {label}."
+    return f"Reminder: {label}."
 
   def _loop(self):
     while not self._stop.is_set():

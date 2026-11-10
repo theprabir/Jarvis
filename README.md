@@ -23,8 +23,9 @@ passages, extracts dates, tables and action items, compares and converts
 documents, searches the web and answers only from the fetched evidence with
 sources, converts units and text, reports the weather, runs timers and
 persisted reminders, falls back to the local model for everything else, and
-speaks through an interruptible Windows SAPI voice. Feature set 4.11 is next
-(see `PLANS-STACK-FEATURES.md`, `CHANGELOG.md`).
+speaks through an interruptible Windows SAPI voice. Feature set 4.11 is in
+progress; its first milestone adds local to-dos, deadlines and recurring
+tasks (see `PLANS-STACK-FEATURES.md`, `CHANGELOG.md`).
 
 ## Requirements
 
@@ -71,6 +72,7 @@ All runtime settings live in `config/settings.toml`:
 | `[conversation]` | Multi-turn context, answer mode, token limits, summarization, history database |
 | `[tools]` | File sandbox root, read/search limits, allowed applications and commands |
 | `[tasks]` | Durable task database, step limit, retries, parallel workers and approval |
+| `[productivity]` | Local to-do database, default priority and list limits |
 | `[documents]` | Document database, limits, chunking, retrieval, folder indexing and optional OCR |
 | `[web]` | Search provider, result and query limits, page extraction, evidence budget, cache |
 | `[memory]` | Enable memory, its SQLite file, automatic learning, retention and how many memories reach the prompt |
@@ -245,6 +247,46 @@ history_items = 20
 single organization run can handle thousands of files. `auto_resume` restarts
 approved background tasks that were still running when JARVIS stopped;
 unapproved tasks stay paused until `/confirm`.
+
+### Productivity to-dos
+
+Productivity items are deliberately separate from durable execution plans.
+`/tasks` continues to mean multi-step file and tool plans; `/todo` manages
+local to-dos, deadlines, priorities, reminders and recurrence in the
+`todo_items` table. To-do reminders use the existing timer scheduler, so no
+second background scheduler is started.
+
+| Capability | Behaviour |
+| --- | --- |
+| Add | `/todo add TEXT [due WHEN] [priority LEVEL] [repeat daily\|weekly\|monthly]` |
+| List | `/todo list`, `/todo all`, or `what's on my todo list` |
+| Detail | `/todo show ID` |
+| Complete | `/todo done ID`, `mark todo ID done`, `complete todo ID` |
+| Change | `/todo edit ID title\|due\|remind\|priority\|repeat VALUE` |
+| Snooze | `/todo snooze ID [MINUTES]` |
+| Remove | `/todo remove ID` |
+
+Natural requests also work: `add a to-do to call mom tomorrow at 5pm`,
+`add a to-do to pay rent due Friday repeat monthly`, and `snooze todo 2 for
+10 minutes`. Priority accepts `low`, `normal`, `high` or `critical`. A due
+date creates an automatic reminder at that time; an explicit
+`remind me ...` phrase can move the reminder earlier or later. Recurring
+to-dos require a due date, and completing one creates exactly one next
+occurrence with a link to the previous item. Reminders and to-dos survive a
+restart, and a reminder that came due while JARVIS was off is reported at the
+next start.
+
+```toml
+[productivity]
+enabled = true
+db = "data/jarvis.db"
+default_priority = "normal"
+max_items = 2000
+```
+
+The current milestone covers local to-dos and deadline reminders. Daily and
+weekly planning, notes, habits, goals, time tracking, calendar and email are
+the remaining 4.11 milestones.
 
 ### Document intelligence
 

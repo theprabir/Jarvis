@@ -155,6 +155,16 @@ auto_resume = true
 # Rows shown by /tasks history.
 history_items = 20
 
+[productivity]
+# Local to-dos, deadlines and recurring tasks. These are separate from the
+# durable multi-step execution plans in [tasks] and use /todo, not /tasks.
+enabled = true
+# To-do items share the assistant database but use their own table.
+db = "data/jarvis.db"
+default_priority = "normal"
+# Upper bound for list and planning queries.
+max_items = 2000
+
 [documents]
 # Local document intelligence: PDF, DOCX, TXT, Markdown, CSV and XLSX.
 # Text and tables stay on this machine; only retrieved passages are sent to

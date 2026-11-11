@@ -8,8 +8,9 @@ deterministic Python modules do the audio, routing and tool work.
 **Current status:** Phase 1 (stabilization) and feature sets **4.1 Voice
 Interface** through **4.11 Productivity Management** complete, plus optional
 document OCR with confidence warnings, released as **v0.2.8** in the
-moderate-advanced feature line. Phase 4.12 is in progress with read-only
-source explanation and project inspection.
+moderate-advanced feature line. Phase 4.12 Developer Assistant is complete
+with local source, search, diagnostics, documentation, Git and confirmed
+execution tools.
 JARVIS listens through the
 microphone with push-to-talk, transcribes offline with Vosk, keeps multi-turn
 context across restarts, remembers explicitly saved preferences, facts, paths
@@ -607,19 +608,29 @@ search_limit = 10
 
 ### Developer assistant
 
-The first 4.12 slice is read-only. `/dev explain PATH` parses Python with the
-standard `ast` module and reports the module docstring, imports, top-level
-functions and classes with their methods. Other text files get a bounded
-language/line overview. `/dev inspect [PATH]` counts files, directories,
-Python modules, test files, file types and important project files. Both
-operations stay inside `[tools] root`; they do not execute project code or
-modify files.
+Phase 4.12 is a local, bounded developer assistant. Source explanation uses
+the standard `ast` module; search and symbol lookup cover the sandbox; error
+analysis, test-failure interpretation, snippets and documentation generation
+are deterministic and work offline. Git operations are read-only and only
+suggest commit messages — they never commit. Formatting, documentation writes,
+templates, test runs and script execution require an explicit confirmation.
+Paths stay inside `[tools] root`; subprocesses use no shell and a sanitized
+environment, with timeouts and output limits.
 
 | Capability | Behaviour |
 | --- | --- |
 | Explain | `/dev explain PATH`, `explain source PATH` |
-| Inspect | `/dev inspect [PATH]`, `inspect project [PATH]` |
-| Tools | `developer_explain`, `developer_inspect` |
+| Inspect | `/dev inspect [PATH]`, `/dev architecture [PATH]` |
+| Search | `/dev search QUERY [\| PATH]`, `search code for QUERY` |
+| Symbols | `/dev find NAME [\| PATH]`, `find class NAME` |
+| Snippets | `/dev snippet python\|javascript\|typescript [\| TEXT]` |
+| Errors | `/dev debug ERROR`, `/dev terminal ERROR`, `/dev failures TEXT` |
+| Docs | `/dev docs [PATH \| OUTPUT]`, `/dev readme [PATH \| OUTPUT]`, `/dev docsearch QUERY` |
+| Tests | `/dev tests [PATH]`, `run tests` |
+| Format | `/dev format PATH` (confirmation required) |
+| Git | `/dev git status\|log [N]\|changes\|message` |
+| Practice | `/dev template KIND NAME [PATH]`, `/dev run PATH [ARGS]` |
+| Tools | `developer_*` validated tools; writes and execution are `confirm` |
 
 ```toml
 [developer]
@@ -627,6 +638,11 @@ enabled = true
 max_files = 500
 max_depth = 4
 max_read_bytes = 200000
+max_results = 50
+max_output_chars = 20000
+test_timeout_s = 120.0
+script_timeout_s = 30.0
+allow_execution = true
 ```
 
 ### Document intelligence
@@ -981,7 +997,7 @@ core/clipboard_history.py Bounded clipboard entries and search
 tools/clipboard_history.py Clipboard-history tool handlers
 core/summaries.py       Daily and meeting summary composition
 tools/summaries.py      Summary tool handlers
-core/developer.py       Source parsing and bounded project inspection
+core/developer.py       Developer search, diagnostics, docs, Git and sandbox execution
 tools/developer.py      Developer tool handlers
 core/documents.py       Extraction, OCR, chunking, FTS5 index, retrieval and generation
 tools/documents.py      Document tool handlers for the validated registry

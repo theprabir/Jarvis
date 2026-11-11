@@ -162,6 +162,11 @@ CONVERSATION_INTENTS = frozenset(
         "summary_meeting",
         "developer_explain",
         "developer_inspect",
+        "developer_search",
+        "developer_find",
+        "developer_architecture",
+        "developer_tests",
+        "developer_debug",
         "task_organize",
         "task_plan",
         "task_list",
@@ -745,6 +750,31 @@ _DEVELOPER_INSPECT = re.compile(
     r"(?:\s+(?P<path>.+))?$",
     re.I,
 )
+_DEVELOPER_SEARCH = re.compile(
+    r"^(?:search|grep|find)\s+(?:the\s+)?(?:code|source)\s+"
+    r"(?:for\s+)?(?P<query>.+)$",
+    re.I,
+)
+_DEVELOPER_FIND = re.compile(
+    r"^(?:find|locate)\s+(?:the\s+)?(?:function|class|symbol)\s+"
+    r"(?:named\s+|called\s+)?(?P<name>[A-Za-z_][A-Za-z0-9_]*)"
+    r"(?:\s+in\s+(?P<path>.+))?$",
+    re.I,
+)
+_DEVELOPER_ARCHITECTURE = re.compile(
+    r"^(?:explain|describe|show)\s+(?:the\s+)?(?:project|repository|repo)\s+"
+    r"(?:architecture|structure)$",
+    re.I,
+)
+_DEVELOPER_TESTS = re.compile(
+    r"^(?:run|execute)\s+(?:the\s+)?tests?(?:\s+in\s+(?P<path>.+))?$",
+    re.I,
+)
+_DEVELOPER_DEBUG = re.compile(
+    r"^(?:debug|explain)\s+(?:this\s+)?(?:error|traceback|exception)"
+    r"(?:\s*[:|-]\s*|\s+)(?P<error>.+)$",
+    re.I | re.S,
+)
 
 
 def recognize_utilities(text):
@@ -1242,10 +1272,38 @@ def recognize_summaries(text):
 
 
 def recognize_developer(text):
-  """Recognize read-only source explanation and project inspection."""
+  """Recognize developer source, search, symbol, test and error requests."""
   source = (text or "").strip().rstrip("?.!")
   if not source:
     return None
+  match = _DEVELOPER_ARCHITECTURE.match(source)
+  if match:
+    return Intent("developer_architecture", 0.9, {})
+  match = _DEVELOPER_TESTS.match(source)
+  if match:
+    return Intent(
+        "developer_tests", 0.9, {"path": _clean(match.group("path") or ".")}
+    )
+  match = _DEVELOPER_DEBUG.match(source)
+  if match:
+    return Intent(
+        "developer_debug", 0.9, {"error": _clean(match.group("error"))}
+    )
+  match = _DEVELOPER_SEARCH.match(source)
+  if match:
+    query = _clean(match.group("query"))
+    if query:
+      return Intent("developer_search", 0.9, {"query": query, "path": "."})
+  match = _DEVELOPER_FIND.match(source)
+  if match:
+    return Intent(
+        "developer_find",
+        0.9,
+        {
+            "name": _clean(match.group("name")),
+            "path": _clean(match.group("path") or "."),
+        },
+    )
   match = _DEVELOPER_EXPLAIN.match(source)
   if match:
     path = _clean(match.group("path"))

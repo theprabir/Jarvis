@@ -249,12 +249,17 @@ retention_days = 30
 search_limit = 10
 
 [developer]
-# Read-only source explanation and bounded project inspection.
-# Paths stay inside [tools] root.
+# Source, search, diagnostics, docs, read-only Git and confirmed execution.
+# Paths stay inside [tools] root. Run/format/write tools ask for confirmation.
 enabled = true
 max_files = 500
 max_depth = 4
 max_read_bytes = 200000
+max_results = 50
+max_output_chars = 20000
+test_timeout_s = 120.0
+script_timeout_s = 30.0
+allow_execution = true
 
 [documents]
 # Local document intelligence: PDF, DOCX, TXT, Markdown, CSV and XLSX.

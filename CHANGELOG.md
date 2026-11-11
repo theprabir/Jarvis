@@ -9,7 +9,7 @@ level increments the middle number.
 
 ## v0.2.8 — 2026-11-11
 
-**Pomodoro end-of-session, recovery visibility and 4.12 Developer Assistant start**
+**Pomodoro end-of-session, recovery visibility and complete 4.12 Developer Assistant**
 
 ### Implemented functionality
 
@@ -25,27 +25,48 @@ level increments the middle number.
   and the `developer_inspect` tool report bounded file/directory counts,
   Python modules, test files, file types, top-level entries and important
   configuration files.
-- **Sandboxed and read-only** — both operations resolve paths inside
-  `[tools] root`, enforce file/depth limits and never execute or modify code.
+- **Search and symbols** — `/dev search` scans bounded source text and
+  `/dev find` locates Python functions and classes with file and line numbers.
+- **Architecture and snippets** — `/dev architecture` summarizes modules,
+  imports and tests; `/dev snippet` generates Python, JavaScript and
+  TypeScript starters.
+- **Diagnostics** — `/dev debug` and `/dev terminal` explain common Python and
+  terminal errors; `/dev failures` interprets unittest/pytest output.
+- **Documentation** — `/dev docs` generates Markdown API docs, `/dev readme`
+  drafts a README, and `/dev docsearch` searches local documentation.
+- **Formatting and tests** — `/dev format` normalizes Python whitespace and
+  `/dev tests` runs the project's unittest suite with a timeout.
+- **Read-only Git** — `/dev git status|log|changes|message` reports status,
+  history, diff stats and a suggested commit message without committing.
+- **Templates and scripts** — `/dev template` creates bounded project skeletons
+  and `/dev run` executes one Python script with `-I`, no shell, a sanitized
+  environment and a timeout.
+- **Explicit permissions and sandbox** — all paths resolve inside `[tools]`
+  root; formatting, doc/README writes, templates, tests and scripts are
+  confirmation-only tools.
 
 ### Files
 
 - `core/pomodoro.py` — bounded-session completion and recovery metadata.
-- `core/developer.py` — source AST summaries and bounded project walker.
-- `tools/developer.py` — validated developer tools.
+- `core/developer.py` — source, search, symbols, architecture, snippets,
+  diagnostics, docs, formatting, tests, Git, templates and sandbox execution.
+- `tools/developer.py` — validated developer tool handlers and confirmation
+  boundaries.
 - `core/assistant.py`, `core/intents.py`, `tools/__init__.py` — Pomodoro
   recovery replies, `/dev` commands, natural routing and tool registration.
-- `core/config.py`, `config/settings.toml` — `end_after_cycles` validation.
+- `core/config.py`, `config/settings.toml` — `end_after_cycles`, scan/results,
+  output, timeout and execution settings.
 - `tests/test_remaining_411.py` — end-of-session and recovery assertions.
-- `tests/test_developer.py` — source, project, sandbox, intent, tool and
-  assistant coverage.
+- `tests/test_developer.py` — source, project, search, symbols, architecture,
+  snippets, diagnostics, docs, formatting, tests, templates, sandbox, intent,
+  tool and assistant coverage.
 - `README.md`, `CHANGELOG.md` — behavior and version.
 
 ### Testing
 
 - Focused remaining 4.11 suite: **14 tests, OK**.
-- Focused developer suite: **5 tests, OK**.
-- Full suite: **543 tests, OK** (the count includes the 4.12 D1 suite).
+- Focused developer suite: **10 tests, OK**.
+- Full suite: **548 tests, OK** (the count includes the complete 4.12 suite).
 - `python -m compileall -q core tools config tests main.py` passed.
 - `git diff --check` passed.
 

@@ -311,6 +311,11 @@ class DeveloperConfig:
   max_files: int = 500
   max_depth: int = 4
   max_read_bytes: int = 200_000
+  max_results: int = 50
+  max_output_chars: int = 20_000
+  test_timeout_s: float = 120.0
+  script_timeout_s: float = 30.0
+  allow_execution: bool = True
 
 
 @dataclass(frozen=True)
@@ -719,8 +724,28 @@ def _validate(settings):
       "[developer] max_read_bytes must be 1000-5000000",
   )
   _require(
+      1 <= developer.max_results <= 500,
+      "[developer] max_results must be 1-500",
+  )
+  _require(
+      1000 <= developer.max_output_chars <= 200_000,
+      "[developer] max_output_chars must be 1000-200000",
+  )
+  _require(
+      1 <= developer.test_timeout_s <= 3600,
+      "[developer] test_timeout_s must be 1-3600",
+  )
+  _require(
+      1 <= developer.script_timeout_s <= 600,
+      "[developer] script_timeout_s must be 1-600",
+  )
+  _require(
       isinstance(developer.enabled, bool),
       "[developer] enabled must be true or false",
+  )
+  _require(
+      isinstance(developer.allow_execution, bool),
+      "[developer] allow_execution must be true or false",
   )
 
   documents = settings.documents

@@ -963,7 +963,7 @@ def build_registry(
         required=("text",),
     )
 
-  # Read-only developer assistant tools.
+  # Developer assistant. Writes and execution are confirmation-only.
   if developer_service is not None and settings.developer.enabled:
     add(
         "developer_explain",
@@ -977,6 +977,164 @@ def build_registry(
         "Inspect a project's files, tests and structure",
         lambda path=".": developer.inspect_project(developer_service, path),
         {"path": str},
+    )
+    add(
+        "developer_search",
+        "Search source and text files for a word",
+        lambda query, path=".": developer.search_code(
+            developer_service, query, path
+        ),
+        {"query": str, "path": str},
+        required=("query",),
+    )
+    add(
+        "developer_find",
+        "Find a Python function or class by name",
+        lambda name, path=".": developer.find_symbol(
+            developer_service, name, path
+        ),
+        {"name": str, "path": str},
+        required=("name",),
+    )
+    add(
+        "developer_architecture",
+        "Explain a project's modules, imports and structure",
+        lambda path=".": developer.explain_architecture(
+            developer_service, path
+        ),
+        {"path": str},
+    )
+    add(
+        "developer_snippet",
+        "Generate a small code snippet from a local template",
+        lambda language="python", description="": developer.generate_snippet(
+            developer_service, language, description
+        ),
+        {"language": str, "description": str},
+    )
+    add(
+        "developer_debug",
+        "Explain a Python error or traceback",
+        lambda error, path="": developer.debug_error(
+            developer_service, error, path
+        ),
+        {"error": str, "path": str},
+        required=("error",),
+    )
+    add(
+        "developer_terminal",
+        "Explain a terminal error message",
+        lambda error: developer.explain_terminal_error(
+            developer_service, error
+        ),
+        {"error": str},
+        required=("error",),
+    )
+    add(
+        "developer_failures",
+        "Interpret unittest or pytest failure output",
+        lambda output: developer.interpret_test_failure(
+            developer_service, output
+        ),
+        {"output": str},
+        required=("output",),
+    )
+    add(
+        "developer_format",
+        "Format a Python source file",
+        lambda path: developer.format_source(developer_service, path),
+        {"path": str},
+        required=("path",),
+        permission=CONFIRM,
+        preview=lambda args: f"Format {shown(args['path'])}",
+    )
+    add(
+        "developer_docs",
+        "Generate Markdown API documentation for a project folder",
+        lambda path=".", output="": developer.generate_documentation(
+            developer_service, path, output
+        ),
+        {"path": str, "output": str},
+        permission=CONFIRM,
+        preview=lambda args: (
+            f"Generate documentation for {shown(args.get('path', '.'))}"
+        ),
+    )
+    add(
+        "developer_readme",
+        "Generate a README draft for a project folder",
+        lambda path=".", output="README.generated.md": developer.generate_readme(
+            developer_service, path, output
+        ),
+        {"path": str, "output": str},
+        permission=CONFIRM,
+        preview=lambda args: (
+            f"Generate {shown(args.get('output', 'README.generated.md'))}"
+        ),
+    )
+    add(
+        "developer_tests",
+        "Run the project's unittest suite",
+        lambda path=".": developer.run_tests(developer_service, path),
+        {"path": str},
+        permission=CONFIRM,
+        timeout_s=300.0,
+        preview=lambda args: f"Run tests in {shown(args.get('path', '.'))}",
+    )
+    add(
+        "developer_git_status",
+        "Show read-only Git working tree status",
+        lambda: developer.git_status(developer_service),
+    )
+    add(
+        "developer_git_log",
+        "Show recent read-only Git commits",
+        lambda limit=10: developer.git_log(developer_service, limit),
+        {"limit": int},
+    )
+    add(
+        "developer_git_changes",
+        "Summarize unstaged Git changes",
+        lambda: developer.git_changes(developer_service),
+    )
+    add(
+        "developer_commit_message",
+        "Suggest a commit message without committing",
+        lambda: developer.commit_message(developer_service),
+    )
+    add(
+        "developer_search_docs",
+        "Search local README and documentation files",
+        lambda query: developer.search_documentation(
+            developer_service, query
+        ),
+        {"query": str},
+        required=("query",),
+    )
+    add(
+        "developer_template",
+        "Create a small project template inside the sandbox",
+        lambda kind, name, path=".": developer.create_template(
+            developer_service, kind, name, path
+        ),
+        {"kind": str, "name": str, "path": str},
+        required=("kind", "name"),
+        permission=CONFIRM,
+        preview=lambda args: (
+            f"Create {args['kind']} template {args['name']}"
+        ),
+    )
+    add(
+        "developer_run_script",
+        "Run one Python script in a subprocess",
+        lambda path, arguments="": developer.run_script(
+            developer_service, path, arguments
+        ),
+        {"path": str, "arguments": str},
+        required=("path",),
+        permission=CONFIRM,
+        timeout_s=120.0,
+        preview=lambda args: f"Run Python script {shown(args['path'])}",
     )
 
   return registry

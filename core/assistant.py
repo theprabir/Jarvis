@@ -257,8 +257,8 @@ HELP_TEXT = (
     " agendas, and /email drafts local messages and uses an explicitly"
     " configured account for search, reading and sending, /pomodoro runs work"
     " and break phases, /clipboard searches bounded copy history, /summary"
-    " builds daily or meeting summaries, and /dev explains source files and"
-    " inspects projects. /help lists this."
+    " builds daily or meeting summaries, and /dev explains, searches, documents"
+    " and inspects local projects. /help lists this."
 )
 
 DOCUMENTS_HELP = (
@@ -335,7 +335,12 @@ SUMMARY_HELP = (
 )
 
 DEVELOPER_HELP = (
-    "Developer commands: explain PATH, inspect [PATH]."
+    "Developer commands: explain PATH, inspect [PATH], search QUERY [| PATH],"
+    " find NAME [| PATH], architecture [PATH], snippet LANGUAGE | TEXT,"
+    " debug ERROR, failures TEXT, terminal ERROR, docs [PATH | OUTPUT],"
+    " readme [PATH | OUTPUT], format PATH, tests [PATH], git status|log|changes|message,"
+    " docsearch QUERY, template KIND NAME [PATH], run PATH [ARGS]."
+    " Format, docs, readme, tests, templates and scripts ask for confirmation."
 )
 
 def _normalize_sentence(text):
@@ -1815,11 +1820,33 @@ class Assistant:
     if service is None:
       return DEVELOPER_DISABLED
     try:
+      entities = intent.entities
       if intent.name == "developer_explain":
-        return service.explain_source(intent.entities.get("path", ""))[0]
-      return service.inspect_project(intent.entities.get("path", "") or ".")[0]
+        return service.explain_source(entities.get("path", ""))[0]
+      if intent.name == "developer_search":
+        return service.search_code(
+            entities.get("query", ""), entities.get("path", ".") or "."
+        )[0]
+      if intent.name == "developer_find":
+        return service.find_symbol(
+            entities.get("name", ""), entities.get("path", ".") or "."
+        )[0]
+      if intent.name == "developer_architecture":
+        return service.explain_architecture(
+            entities.get("path", ".") or "."
+        )[0]
+      if intent.name == "developer_tests":
+        return self._developer_pending(
+            "developer_tests", {"path": entities.get("path", ".") or "."},
+            "run tests",
+        )
+      if intent.name == "developer_debug":
+        return service.debug_error(entities.get("error", ""))[0]
+      return service.inspect_project(
+          entities.get("path", ".") or "."
+      )[0]
     except DeveloperError as exc:
-      return f"I couldn't explain that source, sir: {exc}."
+      return f"I couldn't complete that developer request, sir: {exc}."
 
   def _developer_command(self, text):
     service = self._get_developer()
@@ -1830,19 +1857,111 @@ class Assistant:
     action, _separator, rest = body.partition(" ")
     action = action.lower() or "help"
     rest = rest.strip()
-    if action in {"explain", "describe", "source"}:
-      if not rest:
-        return "Usage: /dev explain PATH"
-      try:
+    if action in {"help", "?"}:
+      return DEVELOPER_HELP
+    try:
+      if action in {"explain", "describe", "source"}:
+        if not rest:
+          return "Usage: /dev explain PATH"
         return service.explain_source(rest)[0]
-      except DeveloperError as exc:
-        return f"I couldn't explain that source, sir: {exc}."
-    if action in {"inspect", "project", "tree"}:
-      try:
+      if action in {"inspect", "project", "tree"}:
         return service.inspect_project(rest or ".")[0]
-      except DeveloperError as exc:
-        return f"I couldn't inspect that project, sir: {exc}."
+      if action in {"search", "grep"}:
+        query, _sep, path = rest.partition("|")
+        if not query.strip():
+          return "Usage: /dev search QUERY [| PATH]"
+        return service.search_code(query.strip(), path.strip() or ".")[0]
+      if action in {"find", "symbol"}:
+        name, _sep, path = rest.partition("|")
+        if not name.strip():
+          return "Usage: /dev find NAME [| PATH]"
+        return service.find_symbol(name.strip(), path.strip() or ".")[0]
+      if action in {"architecture", "arch"}:
+        return service.explain_architecture(rest or ".")[0]
+      if action == "snippet":
+        language, _sep, description = rest.partition("|")
+        return service.generate_snippet(
+            language.strip() or "python", description.strip()
+        )[0]
+      if action in {"debug", "error"}:
+        path, separator, error = rest.partition("|")
+        if separator:
+          return service.debug_error(error.strip(), path.strip())[0]
+        return service.debug_error(rest)[0]
+      if action in {"failures", "failure", "testfailures"}:
+        return service.interpret_test_failure(rest)[0]
+      if action in {"terminal", "stderr"}:
+        return service.explain_terminal_error(rest)[0]
+      if action in {"git", "vcs"}:
+        git_action, _sep, git_arg = rest.partition(" ")
+        git_action = git_action.lower() or "status"
+        if git_action == "status":
+          return service.git_status()[0]
+        if git_action in {"log", "history"}:
+          return service.git_log(int(git_arg) if git_arg.isdigit() else 10)[0]
+        if git_action in {"changes", "diff"}:
+          return service.git_changes()[0]
+        if git_action in {"message", "msg", "commit"}:
+          return service.commit_message()[0]
+        return "Git commands: /dev git status|log [N]|changes|message"
+      if action in {"docsearch", "docssearch"}:
+        return service.search_documentation(rest)[0]
+      if action in {"docs", "document"}:
+        path, _sep, output = rest.partition("|")
+        return self._developer_pending(
+            "developer_docs",
+            {"path": path.strip() or ".", "output": output.strip()},
+            text,
+        )
+      if action == "readme":
+        path, _sep, output = rest.partition("|")
+        return self._developer_pending(
+            "developer_readme",
+            {
+                "path": path.strip() or ".",
+                "output": output.strip() or "README.generated.md",
+            },
+            text,
+        )
+      if action in {"format", "fmt"}:
+        if not rest:
+          return "Usage: /dev format PATH"
+        return self._developer_pending("developer_format", {"path": rest}, text)
+      if action in {"tests", "test"}:
+        return self._developer_pending(
+            "developer_tests", {"path": rest or "."}, text
+        )
+      if action == "template":
+        pieces = rest.split(maxsplit=2)
+        if len(pieces) < 2:
+          return "Usage: /dev template KIND NAME [PATH]"
+        arguments = {
+            "kind": pieces[0],
+            "name": pieces[1],
+            "path": pieces[2] if len(pieces) > 2 else ".",
+        }
+        return self._developer_pending("developer_template", arguments, text)
+      if action in {"run", "execute"}:
+        path, _sep, arguments = rest.partition(" ")
+        if not path:
+          return "Usage: /dev run PATH [ARGS]"
+        return self._developer_pending(
+            "developer_run_script",
+            {"path": path, "arguments": arguments.strip()},
+            text,
+        )
+    except (DeveloperError, ValueError) as exc:
+      return f"I couldn't complete that developer request, sir: {exc}."
     return DEVELOPER_HELP
+
+  def _developer_pending(self, name, arguments, user_text):
+    tool = self.registry.get(name) if self.registry is not None else None
+    if tool is None:
+      return "That developer action needs the tool registry, sir."
+    self._pending_tool = (name, arguments, user_text)
+    self._pending_plan = None
+    self._pending_task = None
+    return f"{tool.describe(arguments)}. Please confirm to continue."
 
   def _pomodoro_command(self, text):
     service = self._get_pomodoro()

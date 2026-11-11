@@ -2,7 +2,24 @@
 
 from __future__ import annotations
 
-from tools import apps, clipboard, desktop, documents, files, system
+from tools import (
+    apps,
+    calendar,
+    clipboard,
+    clipboard_history,
+    desktop,
+    documents,
+    files,
+    goals,
+    habits,
+    mail,
+    notes,
+    pomodoro,
+    productivity,
+    summaries,
+    system,
+    time_tracking,
+)
 from tools.base import (
     CONFIRM,
     SAFE,
@@ -23,7 +40,20 @@ __all__ = [
 ]
 
 
-def build_registry(settings, document_service=None):
+def build_registry(
+    settings,
+    document_service=None,
+    productivity_service=None,
+    notes_service=None,
+    habits_service=None,
+    goals_service=None,
+    time_service=None,
+    calendar_service=None,
+    email_service=None,
+    pomodoro_service=None,
+    clipboard_service=None,
+    summary_service=None,
+):
   """Build the registry for the current configuration."""
   config = settings.tools
   registry = ToolRegistry()
@@ -306,6 +336,503 @@ def build_registry(settings, document_service=None):
         ),
     )
 
+  # Local productivity to-dos. The provider may be the service itself or a
+  # lazy callable, so an assistant does not open its database until first use.
+  if productivity_service is not None and settings.productivity.enabled:
+    add(
+        "todo_add",
+        "Add a local to-do with an optional due date, reminder and recurrence",
+        lambda title, details="", priority="", due="", remind="",
+        recurrence="none", tags="": productivity.add_todo(
+            productivity_service,
+            title,
+            details,
+            priority,
+            due,
+            remind,
+            recurrence,
+            tags,
+        ),
+        {
+            "title": str,
+            "details": str,
+            "priority": str,
+            "due": str,
+            "remind": str,
+            "recurrence": str,
+            "tags": str,
+        },
+        required=("title",),
+    )
+    add(
+        "todo_list",
+        "List local to-dos by status",
+        lambda status="open", limit=20: productivity.list_todos(
+            productivity_service, status, limit
+        ),
+        {"status": str, "limit": int},
+    )
+    add(
+        "plan_day",
+        "Show a daily agenda from open to-dos",
+        lambda day="": productivity.plan_day(productivity_service, day),
+        {"day": str},
+    )
+    add(
+        "plan_week",
+        "Show a seven-day agenda from open to-dos",
+        lambda start="": productivity.plan_week(productivity_service, start),
+        {"start": str},
+    )
+    add(
+        "todo_show",
+        "Show one local to-do",
+        lambda id: productivity.show_todo(productivity_service, id),
+        {"id": int},
+        required=("id",),
+    )
+    add(
+        "todo_update",
+        "Update a local to-do",
+        lambda id, title="", details="", priority="", due="", remind="",
+        recurrence="", tags="", clear_due=False, clear_remind=False: (
+            productivity.update_todo(
+                productivity_service,
+                id,
+                title,
+                details,
+                priority,
+                due,
+                remind,
+                recurrence,
+                tags,
+                clear_due,
+                clear_remind,
+            )
+        ),
+        {
+            "id": int,
+            "title": str,
+            "details": str,
+            "priority": str,
+            "due": str,
+            "remind": str,
+            "recurrence": str,
+            "tags": str,
+            "clear_due": bool,
+            "clear_remind": bool,
+        },
+        required=("id",),
+    )
+    add(
+        "todo_complete",
+        "Complete a local to-do and create its next recurring occurrence",
+        lambda id: productivity.complete_todo(productivity_service, id),
+        {"id": int},
+        required=("id",),
+    )
+    add(
+        "todo_snooze",
+        "Snooze a local to-do reminder",
+        lambda id, minutes=10: productivity.snooze_todo(
+            productivity_service, id, minutes
+        ),
+        {"id": int, "minutes": int},
+        required=("id",),
+    )
+    add(
+        "todo_delete",
+        "Delete a local to-do",
+        lambda id: productivity.delete_todo(productivity_service, id),
+        {"id": int},
+        required=("id",),
+        permission=CONFIRM,
+        preview=lambda arguments: f"Delete to-do #{arguments.get('id', '')}",
+    )
+
+  # Local notes. The provider is lazy for the same reason as productivity:
+  # no database is opened until the first note tool call.
+  if notes_service is not None and settings.notes.enabled:
+    add(
+        "note_add",
+        "Save a local note",
+        lambda content, title="": notes.add_note(
+            notes_service, content, title
+        ),
+        {"content": str, "title": str},
+        required=("content",),
+    )
+    add(
+        "note_list",
+        "List local notes",
+        lambda limit=20: notes.list_notes(notes_service, limit),
+        {"limit": int},
+    )
+    add(
+        "note_show",
+        "Show one local note",
+        lambda id: notes.show_note(notes_service, id),
+        {"id": int},
+        required=("id",),
+    )
+    add(
+        "note_search",
+        "Search local notes",
+        lambda query, limit=10: notes.search_notes(
+            notes_service, query, limit
+        ),
+        {"query": str, "limit": int},
+        required=("query",),
+    )
+    add(
+        "note_update",
+        "Update a local note",
+        lambda id, content="", title="": notes.update_note(
+            notes_service, id, content, title
+        ),
+        {"id": int, "content": str, "title": str},
+        required=("id",),
+    )
+    add(
+        "note_delete",
+        "Delete a local note",
+        lambda id: notes.delete_note(notes_service, id),
+        {"id": int},
+        required=("id",),
+        permission=CONFIRM,
+        preview=lambda arguments: f"Delete note #{arguments.get('id', '')}",
+    )
+
+  # Daily habits. The service is lazy for the same reason as to-dos and notes.
+  if habits_service is not None and settings.habits.enabled:
+    add(
+        "habit_add",
+        "Add a daily habit with an optional reminder time",
+        lambda title, details="", remind="": habits.add_habit(
+            habits_service, title, details, remind
+        ),
+        {"title": str, "details": str, "remind": str},
+        required=("title",),
+    )
+    add(
+        "habit_list",
+        "List daily habits with today's state and streaks",
+        lambda: habits.list_habits(habits_service),
+    )
+    add(
+        "habit_show",
+        "Show one habit, its streak and check-in details",
+        lambda id: habits.show_habit(habits_service, id),
+        {"id": int},
+        required=("id",),
+    )
+    add(
+        "habit_complete",
+        "Check in a habit for today",
+        lambda id: habits.complete_habit(habits_service, id),
+        {"id": int},
+        required=("id",),
+    )
+    add(
+        "habit_undo",
+        "Undo today's habit check-in",
+        lambda id: habits.undo_habit(habits_service, id),
+        {"id": int},
+        required=("id",),
+    )
+    add(
+        "habit_update",
+        "Rename a habit, change details or change its daily reminder",
+        lambda id, title="", details="", remind="": habits.update_habit(
+            habits_service, id, title, details, remind
+        ),
+        {"id": int, "title": str, "details": str, "remind": str},
+        required=("id",),
+    )
+    add(
+        "habit_delete",
+        "Delete a habit and its check-in history",
+        lambda id: habits.delete_habit(habits_service, id),
+        {"id": int},
+        required=("id",),
+        permission=CONFIRM,
+        preview=lambda arguments: f"Delete habit #{arguments.get('id', '')}",
+    )
+
+  # Local goals. This domain is independent of to-dos, notes and habits.
+  if goals_service is not None and settings.goals.enabled:
+    add(
+        "goal_add",
+        "Add a goal with optional numeric target and target date",
+        lambda title, target="", unit="", due="", details="": goals.add_goal(
+            goals_service, title, target, unit, due, details
+        ),
+        {
+            "title": str,
+            "target": str,
+            "unit": str,
+            "due": str,
+            "details": str,
+        },
+        required=("title",),
+    )
+    add(
+        "goal_list",
+        "List goals with progress and target dates",
+        lambda status="active": goals.list_goals(goals_service, status),
+        {"status": str},
+    )
+    add(
+        "goal_show",
+        "Show one goal with progress and target date",
+        lambda id: goals.show_goal(goals_service, id),
+        {"id": int},
+        required=("id",),
+    )
+    add(
+        "goal_progress",
+        "Set or add numeric progress for a goal",
+        lambda id, value, add=False: goals.progress_goal(
+            goals_service, id, value, add
+        ),
+        {"id": int, "value": str, "add": bool},
+        required=("id", "value"),
+    )
+    add(
+        "goal_complete",
+        "Mark a goal completed",
+        lambda id: goals.complete_goal(goals_service, id),
+        {"id": int},
+        required=("id",),
+    )
+    add(
+        "goal_reopen",
+        "Reopen a completed goal",
+        lambda id: goals.reopen_goal(goals_service, id),
+        {"id": int},
+        required=("id",),
+    )
+    add(
+        "goal_update",
+        "Update a goal title, details, target, unit or target date",
+        lambda id, title="", details="", target="", unit="", due="",
+        clear_due=False: goals.update_goal(
+            goals_service, id, title, details, target, unit, due, clear_due
+        ),
+        {
+            "id": int,
+            "title": str,
+            "details": str,
+            "target": str,
+            "unit": str,
+            "due": str,
+            "clear_due": bool,
+        },
+        required=("id",),
+    )
+    add(
+        "goal_delete",
+        "Delete a goal",
+        lambda id: goals.delete_goal(goals_service, id),
+        {"id": int},
+        required=("id",),
+        permission=CONFIRM,
+        preview=lambda arguments: f"Delete goal #{arguments.get('id', '')}",
+    )
+
+  # Local time tracking. Elapsed time is derived from timestamps, so no
+  # additional scheduler or worker is needed.
+  if time_service is not None and settings.time.enabled:
+    add(
+        "time_start",
+        "Start tracking time for a task",
+        lambda label: time_tracking.start_time(time_service, label),
+        {"label": str},
+        required=("label",),
+    )
+    add(
+        "time_stop",
+        "Stop the active time entry",
+        lambda: time_tracking.stop_time(time_service),
+    )
+    add(
+        "time_status",
+        "Show the active time entry and elapsed time",
+        lambda: time_tracking.status_time(time_service),
+    )
+    add(
+        "time_report",
+        "Show tracked daily totals",
+        lambda day="": time_tracking.report_time(time_service, day),
+        {"day": str},
+    )
+    add(
+        "time_week",
+        "Show tracked totals for the current week",
+        lambda start="": time_tracking.week_time(time_service, start),
+        {"start": str},
+    )
+    add(
+        "time_list",
+        "List recent time entries",
+        lambda limit=20: time_tracking.list_time(time_service, limit),
+        {"limit": int},
+    )
+    add(
+        "time_delete",
+        "Delete a time entry",
+        lambda id: time_tracking.delete_time(time_service, id),
+        {"id": int},
+        required=("id",),
+        permission=CONFIRM,
+        preview=lambda arguments: f"Delete time entry #{arguments.get('id', '')}",
+    )
+
+  # Local calendar events and daily agendas.
+  if calendar_service is not None and settings.calendar.enabled:
+    add(
+        "calendar_add",
+        "Create a local calendar event",
+        lambda title, start, duration=60, details="": calendar.add_event(
+            calendar_service, title, start, duration, details
+        ),
+        {"title": str, "start": str, "duration": int, "details": str},
+        required=("title", "start"),
+    )
+    add(
+        "calendar_agenda",
+        "Show the daily calendar agenda",
+        lambda day="": calendar.agenda_calendar(calendar_service, day),
+        {"day": str},
+    )
+    add(
+        "calendar_list",
+        "List upcoming calendar events",
+        lambda limit=20: calendar.list_calendar(calendar_service, limit),
+        {"limit": int},
+    )
+    add(
+        "calendar_show",
+        "Show one calendar event",
+        lambda id: calendar.show_calendar(calendar_service, id),
+        {"id": int},
+        required=("id",),
+    )
+    add(
+        "calendar_update",
+        "Update an event title, start, duration or details",
+        lambda id, title="", start="", duration=0, details="": (
+            calendar.update_calendar(
+                calendar_service, id, title, start, duration, details
+            )
+        ),
+        {
+            "id": int,
+            "title": str,
+            "start": str,
+            "duration": int,
+            "details": str,
+        },
+        required=("id",),
+    )
+    add(
+        "calendar_delete",
+        "Delete a calendar event",
+        lambda id: calendar.delete_calendar(calendar_service, id),
+        {"id": int},
+        required=("id",),
+        permission=CONFIRM,
+        preview=lambda arguments: f"Delete event #{arguments.get('id', '')}",
+    )
+
+  # Local email drafts and optional connected mailbox actions.
+  if email_service is not None and settings.email.enabled:
+    add(
+        "email_draft",
+        "Create a local email draft",
+        lambda recipient, cc="", subject="", body="": mail.draft_email(
+            email_service, recipient, cc, subject, body
+        ),
+        {"recipient": str, "cc": str, "subject": str, "body": str},
+        required=("recipient",),
+    )
+    add(
+        "email_list",
+        "List local email drafts",
+        lambda limit=20: mail.list_drafts(email_service, limit),
+        {"limit": int},
+    )
+    add(
+        "email_show",
+        "Show a local email draft",
+        lambda id: mail.show_draft(email_service, id),
+        {"id": int},
+        required=("id",),
+    )
+    add(
+        "email_update",
+        "Update a local email draft",
+        lambda id, recipient="", cc="", subject="", body="": (
+            mail.update_draft(email_service, id, recipient, cc, subject, body)
+        ),
+        {
+            "id": int,
+            "recipient": str,
+            "cc": str,
+            "subject": str,
+            "body": str,
+        },
+        required=("id",),
+    )
+    add(
+        "email_delete",
+        "Delete a local email draft",
+        lambda id: mail.delete_draft(email_service, id),
+        {"id": int},
+        required=("id",),
+        permission=CONFIRM,
+        preview=lambda arguments: f"Delete email draft #{arguments.get('id', '')}",
+    )
+    add(
+        "email_send",
+        "Send a local email draft through SMTP",
+        lambda id: mail.send_draft(email_service, id),
+        {"id": int},
+        required=("id",),
+        permission=CONFIRM,
+        preview=lambda arguments: f"Send email draft #{arguments.get('id', '')}",
+        timeout_s=settings.email.timeout_s + 5.0,
+    )
+    add(
+        "email_search",
+        "Search the connected mailbox",
+        lambda query="", limit=0: mail.search_inbox(
+            email_service, query, limit
+        ),
+        {"query": str, "limit": int},
+    )
+    add(
+        "email_read",
+        "Read a message from the connected mailbox",
+        lambda uid: mail.read_message(email_service, uid),
+        {"uid": int},
+        required=("uid",),
+    )
+    add(
+        "email_summarize",
+        "Summarize a message from the connected mailbox",
+        lambda uid: mail.summarize_message(email_service, uid),
+        {"uid": int},
+        required=("uid",),
+    )
+    add(
+        "email_reply",
+        "Create a reply draft for a connected mailbox message",
+        lambda uid: mail.reply_message(email_service, uid),
+        {"uid": int},
+        required=("uid",),
+    )
+
   # Desktop
   add(
       "screenshot",
@@ -337,7 +864,9 @@ def build_registry(settings, document_service=None):
   add(
       "clipboard_copy",
       "Copy text to the clipboard",
-      lambda text: clipboard.copy_text(config, text),
+      lambda text: clipboard.copy_text(
+          config, text, clipboard_service if settings.clipboard.enabled else None
+      ),
       {"text": str},
       required=("text",),
       timeout_s=15.0,
@@ -350,5 +879,86 @@ def build_registry(settings, document_service=None):
       timeout_s=15.0,
       preview=lambda arguments: "Read the clipboard",
   )
+
+  # Clipboard history. Copying above records entries through this service.
+  if clipboard_service is not None and settings.clipboard.enabled:
+    add(
+        "clipboard_list",
+        "List recent clipboard history",
+        lambda limit=20: clipboard_history.list_entries(clipboard_service, limit),
+        {"limit": int},
+    )
+    add(
+        "clipboard_search",
+        "Search clipboard history",
+        lambda query, limit=10: clipboard_history.search_entries(
+            clipboard_service, query, limit
+        ),
+        {"query": str, "limit": int},
+        required=("query",),
+    )
+    add(
+        "clipboard_show",
+        "Show one clipboard entry",
+        lambda id: clipboard_history.show_entry(clipboard_service, id),
+        {"id": int},
+        required=("id",),
+    )
+    add(
+        "clipboard_delete",
+        "Delete one clipboard entry",
+        lambda id: clipboard_history.delete_entry(clipboard_service, id),
+        {"id": int},
+        required=("id",),
+        permission=CONFIRM,
+        preview=lambda arguments: f"Delete clipboard entry #{arguments.get('id', '')}",
+    )
+    add(
+        "clipboard_clear",
+        "Delete all clipboard history",
+        lambda: clipboard_history.clear_history(clipboard_service),
+        permission=CONFIRM,
+        preview=lambda arguments: "Delete all clipboard history",
+    )
+
+  # Pomodoro phases use the existing timer scheduler.
+  if pomodoro_service is not None and settings.pomodoro.enabled:
+    add(
+        "pomodoro_start",
+        "Start a Pomodoro work phase",
+        lambda minutes=0: pomodoro.start(pomodoro_service, minutes),
+        {"minutes": int},
+    )
+    add(
+        "pomodoro_status",
+        "Show the current Pomodoro phase",
+        lambda: pomodoro.status(pomodoro_service),
+    )
+    add(
+        "pomodoro_stop",
+        "Stop the current Pomodoro session",
+        lambda: pomodoro.stop(pomodoro_service),
+    )
+    add(
+        "pomodoro_skip",
+        "Skip to the next Pomodoro phase",
+        lambda: pomodoro.skip(pomodoro_service),
+    )
+
+  # Deterministic summaries combine the existing local services.
+  if summary_service is not None:
+    add(
+        "summary_daily",
+        "Summarize to-dos, calendar, tracked time and habits for a day",
+        lambda day="": summaries.daily_summary(summary_service, day),
+        {"day": str},
+    )
+    add(
+        "summary_meeting",
+        "Summarize meeting notes",
+        lambda text: summaries.meeting_summary(summary_service, text),
+        {"text": str},
+        required=("text",),
+    )
 
   return registry

@@ -24,7 +24,7 @@ def _tk_root():
     raise ToolError(f"The clipboard is unavailable: {exc}") from exc
 
 
-def copy_text(config, text):
+def copy_text(config, text, history=None):
   if not isinstance(text, str) or not text.strip():
     raise ToolError("nothing to copy")
   root = _tk_root()
@@ -36,6 +36,11 @@ def copy_text(config, text):
     raise ToolError(f"I could not write to the clipboard: {exc}") from exc
   finally:
     root.destroy()
+  if history is not None:
+    try:
+      history.add(text, source="clipboard")
+    except Exception:
+      log.warning("Could not save clipboard history", exc_info=True)
   return ToolResult(
       True, "Copied to the clipboard, sir.", {"characters": len(text)}
   )

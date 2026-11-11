@@ -6,8 +6,8 @@ around a small local LLM (Llama 3.2 1B Instruct Q4_K_M) served by the existing
 deterministic Python modules do the audio, routing and tool work.
 
 **Current status:** Phase 1 (stabilization) and feature sets **4.1 Voice
-Interface** through **4.10 Document Intelligence** complete, plus optional
-document OCR with confidence warnings, released as **v0.2.5** in the
+Interface** through **4.11 Productivity Management** complete, plus optional
+document OCR with confidence warnings, released as **v0.2.6** in the
 moderate-advanced feature line.
 JARVIS listens through the
 microphone with push-to-talk, transcribes offline with Vosk, keeps multi-turn
@@ -24,8 +24,15 @@ documents, searches the web and answers only from the fetched evidence with
 sources, converts units and text, reports the weather, runs timers and
 persisted reminders, falls back to the local model for everything else, and
 speaks through an interruptible Windows SAPI voice. Feature set 4.11 is in
-progress; its first milestone adds local to-dos, deadlines and recurring
-tasks (see `PLANS-STACK-FEATURES.md`, `CHANGELOG.md`).
+progress; its early milestones add local to-dos, deadlines, recurring tasks,
+validated to-do tools, deterministic date parsing and daily or weekly
+planning, local notes with quick capture and full-text search, daily habits
+with streaks and recurring reminders, goals with numeric progress and target
+dates, local time tracking with daily totals, local calendar events with
+daily agendas, local email drafts with optional connected-account search and
+sending, Pomodoro work/break phases, bounded clipboard history, and daily or
+meeting summaries (see
+`PLANS-STACK-FEATURES.md`, `CHANGELOG.md`).
 
 ## Requirements
 
@@ -73,6 +80,14 @@ All runtime settings live in `config/settings.toml`:
 | `[tools]` | File sandbox root, read/search limits, allowed applications and commands |
 | `[tasks]` | Durable task database, step limit, retries, parallel workers and approval |
 | `[productivity]` | Local to-do database, default priority and list limits |
+| `[notes]` | Local note database, content limits and search result limits |
+| `[habits]` | Daily habit database and habit-count limit |
+| `[goals]` | Goal database and goal-count limit |
+| `[time]` | Time-entry database and time-entry limit |
+| `[calendar]` | Calendar database, event limit and default event duration |
+| `[email]` | Draft database, account servers, username, password env var and mail limits |
+| `[pomodoro]` | Work, break and long-break durations and cycle count |
+| `[clipboard]` | Clipboard history database, size, age and search limits |
 | `[documents]` | Document database, limits, chunking, retrieval, folder indexing and optional OCR |
 | `[web]` | Search provider, result and query limits, page extraction, evidence budget, cache |
 | `[memory]` | Enable memory, its SQLite file, automatic learning, retention and how many memories reach the prompt |
@@ -265,16 +280,42 @@ second background scheduler is started.
 | Change | `/todo edit ID title\|due\|remind\|priority\|repeat VALUE` |
 | Snooze | `/todo snooze ID [MINUTES]` |
 | Remove | `/todo remove ID` |
+| Daily plan | `/plan`, `/plan today`, `/plan tomorrow`, or `plan my day` |
+| Weekly plan | `/plan week`, `/plan this week`, `/plan next week`, or `plan my week` |
 
 Natural requests also work: `add a to-do to call mom tomorrow at 5pm`,
 `add a to-do to pay rent due Friday repeat monthly`, and `snooze todo 2 for
-10 minutes`. Priority accepts `low`, `normal`, `high` or `critical`. A due
+10 minutes`. Natural-language removal such as `remove todo 2` validates the
+item, asks for confirmation and runs through the validated `todo_delete` tool;
+`/todo remove ID` remains an immediate explicit command. Priority accepts
+`low`, `normal`, `high` or `critical`. A due
 date creates an automatic reminder at that time; an explicit
 `remind me ...` phrase can move the reminder earlier or later. Recurring
 to-dos require a due date, and completing one creates exactly one next
 occurrence with a link to the previous item. Reminders and to-dos survive a
 restart, and a reminder that came due while JARVIS was off is reported at the
 next start.
+
+The deterministic date parser understands `tomorrow morning`,
+`this afternoon`, `tonight`, `noon`, `midnight`, `next week`,
+`next month`, `this weekend`, `end of day/week/month`, `November 20`,
+`the 20th`, `two weeks from today` and relative durations such as
+`in two hours`. A bare clock hour is interpreted as afternoon or evening
+(`at 5` means 17:00); say `5am` for the morning. Unrecognized phrases stay in
+the title instead of being guessed.
+
+The same items are exposed to durable plans and model tool calls through the
+validated `todo_add`, `todo_list`, `todo_show`, `todo_update`, `todo_complete`,
+`todo_snooze` and `todo_delete` tools. They use the assistant's single lazy
+`ProductivityService`, so tool calls and `/todo` never open separate databases
+or scheduler threads. `todo_delete` requires confirmation; the other to-do
+tools are safe to run directly.
+
+Planning is read-only and deterministic. `/plan` groups open to-dos into
+overdue, today, unscheduled and upcoming work; `/plan week` covers the next
+seven days, with overdue, unscheduled and later items kept separate. The
+`plan_day` and `plan_week` tools expose the same agendas to durable plans and
+model tool calls. Planning never creates deadlines or changes an item.
 
 ```toml
 [productivity]
@@ -284,9 +325,279 @@ default_priority = "normal"
 max_items = 2000
 ```
 
-The current milestone covers local to-dos and deadline reminders. Daily and
-weekly planning, notes, habits, goals, time tracking, calendar and email are
-the remaining 4.11 milestones.
+The current milestone covers local to-dos, deadline reminders, validated
+to-do tools, deterministic date parsing, daily or weekly planning and local
+notes, daily habits with streaks and reminders, goals with numeric progress
+and target dates, local time tracking with daily totals, local calendar
+events with daily agendas, local email drafts with optional connected-account
+search, reading, summarization and sending, timer-backed Pomodoro phases,
+bounded clipboard history, and deterministic daily and meeting summaries.
+
+### Notes
+
+Notes are local records in their own `notes` table, separate from to-dos,
+memories and conversation history. Capture works from typed or spoken text,
+so a quick note can be saved without waiting for the model.
+
+| Capability | Behaviour |
+| --- | --- |
+| Add | `/notes add TEXT`, or `/notes add TITLE \| TEXT` |
+| Quick capture | `note that ...`, `take a note ...`, `note: ...`, `quick note ...`, `jot down ...` |
+| List | `/notes`, `/notes list`, `list my notes`, `what are my notes` |
+| Detail | `/notes show ID`, `show note ID` |
+| Search | `/notes search QUERY`, `search notes for QUERY`, `notes about QUERY` |
+| Change | `/notes edit ID content\|title VALUE` |
+| Remove | `/notes remove ID`; natural `remove note ID` asks for confirmation |
+
+Search uses SQLite FTS5 over note titles and content, with a scored scan
+fallback when FTS5 is unavailable. Results include a short matching excerpt.
+The `note_add`, `note_list`, `note_show`, `note_search`, `note_update` and
+`note_delete` tools expose the same service to durable plans and model tool
+calls; `note_delete` requires confirmation.
+
+```toml
+[notes]
+enabled = true
+db = "data/jarvis.db"
+max_items = 5000
+max_content_chars = 10000
+search_limit = 10
+```
+
+### Habits
+
+Habits are daily records in their own `habits` and `habit_checkins` tables.
+There is one check-in per local day, so a repeated check-in is idempotent.
+Current streaks count consecutive days ending today, or ending yesterday when
+today has not been checked in yet; best streaks are kept separately.
+
+| Capability | Behaviour |
+| --- | --- |
+| Add | `/habit add NAME [at TIME]`, or `add a habit to read every day at 9pm` |
+| List | `/habit list`, `list my habits`, `what are my habits` |
+| Detail | `/habit show ID`, `show habit ID` |
+| Check in | `/habit done ID`, `habit ID done`, `complete habit ID` |
+| Undo today | `/habit undo ID`, `undo habit ID` |
+| Stats | `/habit stats`, `show my habit streaks` |
+| Change | `/habit edit ID name\|remind VALUE`, or `/habit edit ID clear reminder` |
+| Remove | `/habit remove ID`; natural `remove habit ID` asks for confirmation |
+
+An optional reminder time creates one persisted daily reminder through the
+existing timer scheduler. It fires while JARVIS is running; after a restart
+the next occurrence is restored, and a missed occurrence is rolled forward
+instead of delivered as a flood. Deleting a habit removes its check-in history
+and pending reminder. The `habit_add`, `habit_list`, `habit_show`,
+`habit_complete`, `habit_undo`, `habit_update` and `habit_delete` tools expose
+the same service to durable plans and model tool calls; `habit_delete`
+requires confirmation.
+
+```toml
+[habits]
+enabled = true
+db = "data/jarvis.db"
+max_habits = 200
+```
+
+### Goals
+
+Goals are local records in their own `goals` table with an optional numeric
+target, a unit and a target date. Numeric progress is independent of habit
+check-ins and to-do completion; a goal can also stay open-ended with no number.
+
+| Capability | Behaviour |
+| --- | --- |
+| Add | `/goal add TEXT [target N UNIT] [due WHEN]`, or `add a goal to read 12 books by December 31` |
+| List | `/goal list`, `/goal list completed`, `/goal list all`, `list my goals` |
+| Detail | `/goal show ID`, `show goal ID` |
+| Progress | `/goal progress ID VALUE`, `goal ID progress VALUE` |
+| Increment | `/goal increment ID VALUE`, `add 2 to goal ID` |
+| Complete | `/goal complete ID`, `complete goal ID` |
+| Reopen | `/goal reopen ID`, `reopen goal ID` |
+| Change | `/goal edit ID name\|target\|unit\|due VALUE`, or `/goal edit ID clear due` |
+| Remove | `/goal remove ID`; natural `remove goal ID` asks for confirmation |
+
+Active goals are listed before completed goals. Target dates show days left,
+`today`, or how many days overdue; target dates do not create notifications.
+The `goal_add`, `goal_list`, `goal_show`, `goal_progress`, `goal_complete`,
+`goal_reopen`, `goal_update` and `goal_delete` tools expose the same service to
+durable plans and model tool calls. `goal_delete` requires confirmation.
+
+```toml
+[goals]
+enabled = true
+db = "data/jarvis.db"
+max_goals = 500
+```
+
+### Time tracking
+
+Time entries are local records in their own `time_entries` table. Only one
+entry can be active at a time, and elapsed time is derived from persisted
+timestamps rather than a background timer. Daily totals split entries that
+cross midnight between the two local dates.
+
+| Capability | Behaviour |
+| --- | --- |
+| Start | `/time start writing`, or `start tracking writing` |
+| Stop | `/time stop`, or `stop tracking` |
+| Status | `/time status`, `what am I tracking` |
+| Daily totals | `/time today`, `/time yesterday`, `/time report DATE`, `how much time did I spend today` |
+| Weekly totals | `/time week` |
+| Entries | `/time list`, `list my time entries` |
+| Remove | `/time remove ID`; natural `remove time entry ID` asks for confirmation |
+
+The `time_start`, `time_stop`, `time_status`, `time_report`, `time_week`,
+`time_list` and `time_delete` tools expose the same service to durable plans
+and model tool calls. `time_delete` requires confirmation; the other time
+tools are safe. Reports use the computer's local date.
+
+```toml
+[time]
+enabled = true
+db = "data/jarvis.db"
+max_entries = 20000
+```
+
+### Calendar
+
+Calendar events are local records in their own `calendar_events` table,
+separate from to-dos, notes and time entries. Each event has a title, optional
+details, a start date and time, and a duration in minutes; the daily agenda
+lists events whose start time falls on the requested local date.
+
+| Capability | Behaviour |
+| --- | --- |
+| Add | `/calendar add TITLE at WHEN [for DURATION] [\| DETAILS]`, or `add a calendar event for lunch tomorrow at noon` |
+| Today | `/calendar today`, `what's on my calendar today` |
+| Tomorrow | `/calendar tomorrow`, `what's on my agenda tomorrow` |
+| Agenda date | `/calendar agenda DATE` |
+| Upcoming | `/calendar list`, `/calendar upcoming` |
+| Detail | `/calendar show ID`, `show calendar event ID` |
+| Change | `/calendar edit ID title\|start\|duration\|details VALUE` |
+| Remove | `/calendar remove ID`; natural `remove calendar event ID` asks for confirmation |
+
+Durations default to 60 minutes and must be between 1 and 1440 minutes. The
+`calendar_add`, `calendar_agenda`, `calendar_list`, `calendar_show`,
+`calendar_update` and `calendar_delete` tools expose the same lazy service to
+durable plans and model tool calls. `calendar_delete` requires confirmation;
+the other calendar tools are safe. Agenda dates and event times use the
+computer's local date and time.
+
+```toml
+[calendar]
+enabled = true
+db = "data/jarvis.db"
+max_events = 5000
+default_duration_minutes = 60
+```
+
+### Email
+
+Email drafts are local records in their own `email_drafts` table. Drafting,
+listing, editing, deleting and reply drafting work without an account. Remote
+search, reading and sending are enabled only when an IMAP or SMTP server is
+explicitly configured in `[email]`; the password is read from the environment
+variable named by `password_env`, never from the TOML file.
+
+| Capability | Behaviour |
+| --- | --- |
+| Draft | `/email draft RECIPIENT [about SUBJECT] [\| SUBJECT \| BODY]`, or `draft an email to sam@example.com about lunch` |
+| List | `/email list`, `list my email drafts` |
+| Detail | `/email show ID`, `show email draft ID` |
+| Change | `/email edit ID to\|cc\|subject\|body VALUE` |
+| Remove | `/email remove ID`; natural `remove email draft ID` asks for confirmation |
+| Send | `/email send ID`, `send email draft ID`; sending always asks for confirmation |
+| Search | `/email search QUERY`, `search my email for invoice` |
+| Read | `/email read UID`, `read email UID` |
+| Summarize | `/email summarize UID`, `summarize email UID` |
+| Reply | `/email reply UID`, `reply to email UID` creates a local reply draft |
+
+The `email_draft`, `email_list`, `email_show`, `email_update`, `email_delete`,
+`email_send`, `email_search`, `email_read`, `email_summarize` and
+`email_reply` tools expose the same service to durable plans and model tool
+calls. `email_delete` and `email_send` require confirmation. Search and
+summaries are extractive and never send message content to the model.
+
+```toml
+[email]
+enabled = true
+db = "data/jarvis.db"
+max_drafts = 1000
+from_address = ""
+username = ""
+password_env = "JARVIS_EMAIL_PASSWORD"
+imap_host = ""
+imap_port = 993
+imap_ssl = true
+smtp_host = ""
+smtp_port = 587
+smtp_ssl = false
+smtp_starttls = true
+mailbox = "INBOX"
+search_limit = 10
+timeout_s = 20.0
+max_body_chars = 20000
+```
+
+Set the password in the environment before starting JARVIS:
+
+```bat
+set JARVIS_EMAIL_PASSWORD=...
+.venv\Scripts\python main.py
+```
+
+### Pomodoro, clipboard history and summaries
+
+Pomodoro phases reuse the existing timer scheduler: no second thread or
+service is created. A work phase is followed by a break, and every configured
+cycle ends with a longer break. The session runs until it is stopped.
+
+| Capability | Behaviour |
+| --- | --- |
+| Start | `/pomodoro start [MINUTES]`, `start a pomodoro` |
+| Status | `/pomodoro status`, `pomodoro status` |
+| Stop | `/pomodoro stop`, `stop the pomodoro` |
+| Skip phase | `/pomodoro skip`, `skip the pomodoro` |
+| Work/breaks | `[pomodoro] work_minutes`, `break_minutes`, `long_break_minutes`, `cycles_before_long_break` |
+
+Clipboard copies are recorded in the local `clipboard_entries` table when the
+`clipboard_copy` tool is used. History is bounded by item count, character
+size and age; older entries are pruned automatically. The history never
+stores passwords by design, so do not copy secrets into the clipboard.
+
+| Capability | Behaviour |
+| --- | --- |
+| History | `/clipboard list`, `show clipboard history` |
+| Search | `/clipboard search QUERY`, `search clipboard for TEXT` |
+| Detail | `/clipboard show ID`, `show clipboard entry ID` |
+| Remove | `/clipboard remove ID`, `remove clipboard entry ID`; asks for confirmation |
+| Clear | `/clipboard clear`, `clear clipboard history`; asks for confirmation |
+
+Daily summaries combine open to-dos, calendar events, tracked time and habit
+check-ins. Meeting summaries are extractive summaries of supplied notes;
+neither action calls the model or network.
+
+| Capability | Behaviour |
+| --- | --- |
+| Daily | `/summary`, `/summary daily [DATE]`, `summarize my day` |
+| Meeting | `/summary meeting TITLE \| NOTES`, `summarize meeting TITLE \| NOTES` |
+
+```toml
+[pomodoro]
+enabled = true
+work_minutes = 25
+break_minutes = 5
+long_break_minutes = 15
+cycles_before_long_break = 4
+
+[clipboard]
+enabled = true
+db = "data/jarvis.db"
+max_items = 500
+max_chars = 10000
+retention_days = 30
+search_limit = 10
+```
 
 ### Document intelligence
 
@@ -585,7 +896,8 @@ folder indexing and unchanged-file skipping, OCR of images and image-only
 PDFs, OCR confidence estimates and partial-recognition warnings, OCR
 disabling, summaries, dates, action items, comparison, conversion, report and
 document generation, document commands and tool confirmations, unit conversions, text and size formatting,
-Open-Meteo response parsing, timer polling and reminder persistence, Escape
+email draft validation and optional IMAP/SMTP flows, Open-Meteo response parsing,
+timer polling and reminder persistence, Escape
 interruption, VAD segmentation,
 resampling, device resolution, speech text cleanup and SAPI rate mapping. The
 Vosk transcription test is skipped when the model is absent and desktop tools
@@ -621,6 +933,24 @@ web/cache.py            Bounded SQLite search cache with stale fallback
 core/memory.py          Layered memory store, FTS5 search, episodes, ranking
 core/learning.py        Candidate extraction, importance, episodes, short-term buffer
 core/tasks.py           Durable plans, execution, approval, checkpoints, history
+core/notes.py           Local notes, FTS5 search, scan fallback and formatting
+tools/notes.py          Note tool handlers for the validated registry
+core/habits.py          Daily habits, streaks, parsing and reminder scheduling
+tools/habits.py         Habit tool handlers for the validated registry
+core/goals.py           Goals, numeric progress, target dates and formatting
+tools/goals.py          Goal tool handlers for the validated registry
+core/time_tracking.py   Active entries, elapsed time, daily and weekly totals
+tools/time_tracking.py  Time tool handlers for the validated registry
+core/calendar.py        Local events, daily agendas, parsing and formatting
+tools/calendar.py       Calendar tool handlers for the validated registry
+core/mail.py            Local drafts, optional IMAP search, SMTP sending and summaries
+tools/mail.py           Email tool handlers for the validated registry
+core/pomodoro.py        Work/break phases over the shared timer service
+tools/pomodoro.py       Pomodoro tool handlers
+core/clipboard_history.py Bounded clipboard entries and search
+tools/clipboard_history.py Clipboard-history tool handlers
+core/summaries.py       Daily and meeting summary composition
+tools/summaries.py      Summary tool handlers
 core/documents.py       Extraction, OCR, chunking, FTS5 index, retrieval and generation
 tools/documents.py      Document tool handlers for the validated registry
 core/utilities.py       Unit conversion, text, size, duration and reminder parsing
@@ -663,6 +993,40 @@ logs/                   Runtime logs (git-ignored)
   planned: the sequence stops at that clause and the confirmation shows what
   will run. Organization and `as a task` / `/tasks plan` requests become
   durable tasks; open-ended reasoning still goes to the model.
+- Note search is lexical FTS5 with no embeddings; a search that uses
+  different words from the note can miss it. Notes are not versioned, and
+  deleting one is permanent after confirmation.
+- Habits are daily-only and keep one check-in per local date. Weekly targets,
+  pauses, multiple check-ins per day and custom time zones are not supported.
+  Streaks use the computer's local date, so travel can shift a day boundary.
+  A reminder fires only while JARVIS is running; after a restart the next daily
+  occurrence is scheduled, and an old occurrence is skipped rather than
+  delivered late.
+- Goals have one numeric progress value and one target date. Sub-goals,
+  milestones, recurring goals, target-date notifications and time-zone-aware
+  deadlines are not supported. Target dates use the computer's local date.
+- Time tracking keeps one active entry at a time and uses the computer's local
+  date. It does not detect idle time, edit past entry boundaries, assign
+  billable rates or split an active entry manually. Reports include only
+  entries that overlap the requested day.
+- Calendar events are local-only. There is no external calendar sync, OAuth,
+  attendee or invitation support, recurrence, time-zone handling or event
+  reminder. An event appears on the agenda of the date its start time falls
+  on; events crossing midnight are not repeated on the next day.
+- Email drafts are local until explicitly sent. Remote search and sending need
+  an IMAP/SMTP account and the environment password; there is no OAuth, contact
+  autocomplete, attachment handling, rich HTML composition, folder management
+  or background mail sync. Summaries are extractive and use only the fetched
+  message body.
+- Pomodoro state is in memory for the current session and uses the existing
+  timer scheduler. It does not survive a restart, and custom work/break
+  patterns beyond the configured durations are not supported.
+- Clipboard history records copies made through JARVIS, not changes made in
+  other applications. It has no encryption at rest and no automatic secret
+  detection; retention limits reduce but do not eliminate that risk.
+- Daily summaries read the local services and do not create or change data.
+  Meeting summaries are extractive and do not understand speaker turns,
+  decisions or action items beyond the supplied text.
 - OCR is optional and uses the built-in Windows OCR engine, so it needs
   Windows and the matching OCR language pack. It reads scanned PDF pages up to
   `ocr_max_pages` and image files; low-resolution, rotated or unusual-font

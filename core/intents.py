@@ -16,8 +16,13 @@ from dataclasses import dataclass, field
 from core.calculator import CalculationError, evaluate
 from core.dates import find_date_reference
 
+from core.goals import parse_goal_input
+from core.habits import parse_habit_input
 from core.memory import classify as classify_memory
 from core.productivity import parse_todo_input
+from core.calendar import parse_event_input
+from core.mail import parse_email_input
+from core.time_tracking import _report_date
 from core.utilities import (
     UtilityError,
     convert,
@@ -103,6 +108,58 @@ CONVERSATION_INTENTS = frozenset(
         "todo_done",
         "todo_delete",
         "todo_snooze",
+        "plan_day",
+        "plan_week",
+        "note_add",
+        "note_list",
+        "note_show",
+        "note_search",
+        "note_delete",
+        "habit_add",
+        "habit_list",
+        "habit_show",
+        "habit_done",
+        "habit_undo",
+        "habit_stats",
+        "habit_delete",
+        "goal_add",
+        "goal_list",
+        "goal_show",
+        "goal_progress",
+        "goal_complete",
+        "goal_reopen",
+        "goal_delete",
+        "time_start",
+        "time_stop",
+        "time_status",
+        "time_report",
+        "time_week",
+        "time_list",
+        "time_delete",
+        "calendar_add",
+        "calendar_agenda",
+        "calendar_show",
+        "calendar_delete",
+        "email_draft",
+        "email_list",
+        "email_show",
+        "email_delete",
+        "email_send",
+        "email_search",
+        "email_read",
+        "email_summarize",
+        "email_reply",
+        "pomodoro_start",
+        "pomodoro_status",
+        "pomodoro_stop",
+        "pomodoro_skip",
+        "clipboard_list",
+        "clipboard_search",
+        "clipboard_show",
+        "clipboard_delete",
+        "clipboard_clear",
+        "summary_daily",
+        "summary_meeting",
         "task_organize",
         "task_plan",
         "task_list",
@@ -145,6 +202,23 @@ COMMANDS = frozenset(
         "cancel",
         "tools",
         "tasks",
+        "plan",
+        "note",
+        "notes",
+        "habit",
+        "habits",
+        "goal",
+        "goals",
+        "time",
+        "calendar",
+        "cal",
+        "email",
+        "mail",
+        "pomodoro",
+        "pomo",
+        "clipboard",
+        "summary",
+        "summaries",
         "todo",
         "todos",
         "documents",
@@ -388,6 +462,274 @@ _TODO_SNOOZE = re.compile(
     r"(?:\s+(?:for|by)\s+(?P<duration>.+))?$",
     re.I,
 )
+_PLAN_DAY = re.compile(
+    r"^(?:what(?:'s| is)\s+)?(?:my\s+)?(?:daily\s+)?plan"
+    r"(?:\s+(?:for\s+)?(?:my\s+)?day)?"
+    r"(?:\s+(?:for|on)\s+(?P<when_for>.+))?"
+    r"(?:\s+(?P<when_bare>today|tomorrow|tonight|this\s+week"
+    r"|next\s+week))?$",
+    re.I,
+)
+_PLAN_WEEK = re.compile(
+    r"^(?:what(?:'s| is)\s+)?(?:my\s+)?"
+    r"(?:(?:weekly|week)\s+plan"
+    r"|plan\s+(?:for\s+)?(?:my\s+)?(?P<when>this|next)?\s*week)$",
+    re.I,
+)
+_NOTE_ADD = re.compile(
+    r"^(?:please\s+)?(?:take|make|write|add|save)\s+"
+    r"(?:a\s+|an\s+)?(?:quick\s+|new\s+)?note"
+    r"(?:\s+(?:that|saying|about))?\s*[:\-]?\s*(?P<body>.+)$",
+    re.I,
+)
+_NOTE_ALT = re.compile(
+    r"^(?:(?:quick|new)\s+note|note)\s*(?:that|:|-|,)\s*"
+    r"(?P<body>.+)$"
+    r"|^(?:jot\s+down|note\s+down)\s+(?P<jot>.+)$"
+    r"|^(?:quick|new)\s+note\s+(?P<quick>.+)$"
+    r"|^note\s+(?P<plain>[a-z].{2,})$",
+    re.I,
+)
+_NOTE_LIST = re.compile(
+    r"^(?:(?:list|show|read)\s+(?:me\s+)?(?:my\s+)?notes"
+    r"|what(?:'s| is)?\s+(?:in\s+)?my\s+notes"
+    r"|what\s+(?:are\s+)?my\s+notes"
+    r"|my\s+notes)$",
+    re.I,
+)
+_NOTE_SHOW = re.compile(
+    r"^(?:show|open|read|display)\s+note\s+#?(?P<id>\d+)$", re.I
+)
+_NOTE_DELETE = re.compile(
+    r"^(?:delete|remove)\s+note\s+#?(?P<id>\d+)$", re.I
+)
+_NOTE_SEARCH = re.compile(
+    r"^(?:search|find|look\s+through)\s+(?:my\s+)?notes"
+    r"\s+(?:for|about|on)\s+(?P<query>.+)$"
+    r"|^notes\s+(?:about|on)\s+(?P<about>.+)$"
+    r"|^what\s+do\s+my\s+notes\s+say\s+(?:about|on)\s+(?P<say>.+)$",
+    re.I,
+)
+_HABIT_ADD = re.compile(
+    r"^(?:please\s+)?(?:add|create|start|track)\s+(?:a\s+|an\s+)?"
+    r"(?:new\s+)?habit\s+(?:to\s+)?(?P<body>.+)$",
+    re.I,
+)
+_HABIT_ADD_ALT = re.compile(
+    r"^(?:please\s+)?(?:add|create|start|track)\s+"
+    r"(?P<body>.+?)\s+as\s+a\s+habit$",
+    re.I,
+)
+_HABIT_LIST = re.compile(
+    r"^(?:(?:list|show)\s+(?:me\s+)?(?:my\s+)?habits"
+    r"|what\s+(?:are\s+)?my\s+habits"
+    r"|my\s+habits)$",
+    re.I,
+)
+_HABIT_SHOW = re.compile(
+    r"^(?:show|describe|details?|open)\s+habit\s+#?(?P<id>\d+)$", re.I
+)
+_HABIT_DONE = re.compile(
+    r"^(?:(?:mark|set)\s+)?habit\s+#?(?P<id>\d+)\s+"
+    r"(?:as\s+)?(?:done|complete[d]?)$"
+    r"|^(?:complete|finish|check\s+off|did)\s+habit\s+#?(?P<id2>\d+)$"
+    r"|^habit\s+#?(?P<id3>\d+)\s+(?:done|complete[d]?)$",
+    re.I,
+)
+_HABIT_UNDO = re.compile(
+    r"^(?:undo|uncheck|reset)\s+habit\s+#?(?P<id>\d+)$", re.I
+)
+_HABIT_STATS = re.compile(
+    r"^habits?\s+stats$"
+    r"|^(?:show|list)\s+(?:my\s+)?habit\s+streaks$"
+    r"|^what(?:'s| is)?\s+my\s+habit\s+streaks?$",
+    re.I,
+)
+_HABIT_DELETE = re.compile(
+    r"^(?:delete|remove)\s+habit\s+#?(?P<id>\d+)$", re.I
+)
+_GOAL_ADD = re.compile(
+    r"^(?:please\s+)?(?:add|create|set|start)\s+(?:a\s+|an\s+)?"
+    r"(?:new\s+)?goal\s+(?:to\s+)?(?P<body>.+)$",
+    re.I,
+)
+_GOAL_ADD_ALT = re.compile(
+    r"^(?:please\s+)?(?:add|create|set|start)\s+"
+    r"(?P<body>.+?)\s+as\s+a\s+goal$",
+    re.I,
+)
+_GOAL_LIST = re.compile(
+    r"^(?:(?:list|show)\s+(?:me\s+)?(?:my\s+)?goals"
+    r"|what\s+(?:are\s+)?my\s+goals"
+    r"|my\s+goals)$",
+    re.I,
+)
+_GOAL_SHOW = re.compile(
+    r"^(?:show|describe|details?|open)\s+goal\s+#?(?P<id>\d+)$", re.I
+)
+_GOAL_PROGRESS = re.compile(
+    r"^(?:set|update)\s+goal\s+#?(?P<id>\d+)\s+"
+    r"(?:progress\s+)?(?:to\s+)?(?P<value>\d+(?:\.\d+)?)$"
+    r"|^goal\s+#?(?P<id2>\d+)\s+progress\s+"
+    r"(?P<value2>\d+(?:\.\d+)?)$"
+    r"|^(?:add\s+)?(?P<value3>\d+(?:\.\d+)?)\s+to\s+goal\s+"
+    r"#?(?P<id3>\d+)$"
+    r"|^goal\s+#?(?P<id4>\d+)\s+add\s+"
+    r"(?P<value4>\d+(?:\.\d+)?)$",
+    re.I,
+)
+_GOAL_COMPLETE = re.compile(
+    r"^(?:complete|finish|mark)\s+goal\s+#?(?P<id>\d+)"
+    r"(?:\s+(?:as\s+)?(?:done|complete[d]?))?$"
+    r"|^goal\s+#?(?P<id2>\d+)\s+(?:done|complete[d]?)$",
+    re.I,
+)
+_GOAL_REOPEN = re.compile(
+    r"^(?:reopen|re-open|restart)\s+goal\s+#?(?P<id>\d+)$", re.I
+)
+_GOAL_DELETE = re.compile(
+    r"^(?:delete|remove)\s+goal\s+#?(?P<id>\d+)$", re.I
+)
+_TIME_START = re.compile(
+    r"^(?:start|begin)\s+(?:tracking|time\s+tracking)"
+    r"(?:\s+(?:on|for))?\s+(?P<label>.+)$"
+    r"|^(?:start|begin)\s+(?:the\s+)?clock\s+(?:on|for)\s+"
+    r"(?P<clock>.+)$",
+    re.I,
+)
+_TIME_STOP = re.compile(
+    r"^(?:stop|end|finish)\s+(?:tracking|time\s+tracking|the\s+clock)$",
+    re.I,
+)
+_TIME_STATUS = re.compile(
+    r"^(?:what\s+am\s+i\s+tracking|time\s+tracking\s+status"
+    r"|am\s+i\s+tracking|show\s+(?:the\s+)?active\s+time\s+entry)$",
+    re.I,
+)
+_TIME_REPORT = re.compile(
+    r"^(?:how\s+much\s+time\s+did\s+i\s+spend"
+    r"|show\s+(?:my\s+)?time\s+totals?|time\s+totals?"
+    r"|today'?s\s+time|time\s+today)"
+    r"(?:\s+(?:on|for)\s+(?P<day>.+))?"
+    r"(?:\s+(?P<day2>today|yesterday))?$",
+    re.I,
+)
+_TIME_WEEK = re.compile(
+    r"^(?:show\s+)?(?:my\s+)?(?:time\s+week|weekly\s+time\s+totals)"
+    r"(?:\s+(?:starting|from)\s+(?P<start>.+))?$",
+    re.I,
+)
+_TIME_LIST = re.compile(
+    r"^(?:list|show)\s+(?:my\s+)?time\s+entries|^time\s+entries$", re.I
+)
+_TIME_DELETE = re.compile(
+    r"^(?:delete|remove)\s+time\s+entry\s+#?(?P<id>\d+)$", re.I
+)
+_CALENDAR_ADD = re.compile(
+    r"^(?:please\s+)?(?:add|create|schedule)\s+(?:a\s+|an\s+)?"
+    r"(?:calendar\s+)?event\s+(?:for\s+)?(?P<body>.+)$",
+    re.I,
+)
+_CALENDAR_AGENDA = re.compile(
+    r"^(?:what(?:'s| is)\s+on\s+)?(?:my\s+)?(?:calendar|agenda)"
+    r"(?:\s+(?:for|on)\s+(?P<day>.+))?"
+    r"(?:\s+(?P<day2>today|tomorrow|yesterday))?$",
+    re.I,
+)
+_CALENDAR_SHOW = re.compile(
+    r"^(?:show|describe|details?|open)\s+(?:calendar\s+)?event\s+"
+    r"#?(?P<id>\d+)$",
+    re.I,
+)
+_CALENDAR_DELETE = re.compile(
+    r"^(?:delete|remove)\s+(?:calendar\s+)?event\s+#?(?P<id>\d+)$",
+    re.I,
+)
+_EMAIL_DRAFT = re.compile(
+    r"^(?:please\s+)?(?:draft|write|compose|create|make|prepare)\s+"
+    r"(?:me\s+)?(?:an?\s+)?(?:email|mail)\s+(?:to\s+)?(?P<body>.+)$",
+    re.I,
+)
+_EMAIL_LIST = re.compile(
+    r"^(?:list|show)\s+(?:my\s+)?(?:email\s+|mail\s+)?drafts$", re.I
+)
+_EMAIL_SHOW = re.compile(
+    r"^(?:show|open|display)\s+(?:email\s+|mail\s+)?draft\s+#?(?P<id>\d+)$",
+    re.I,
+)
+_EMAIL_SEND = re.compile(
+    r"^send\s+(?:email\s+|mail\s+)?draft\s+#?(?P<id>\d+)$", re.I
+)
+_EMAIL_DELETE = re.compile(
+    r"^(?:delete|remove)\s+(?:email\s+|mail\s+)?draft\s+#?(?P<id>\d+)$",
+    re.I,
+)
+_EMAIL_SEARCH = re.compile(
+    r"^(?:search|find)\s+(?:my\s+)?(?:email|mail|inbox)\s+"
+    r"(?:for\s+)?(?P<query>.+)$",
+    re.I,
+)
+_EMAIL_READ = re.compile(
+    r"^(?:read|open|show)\s+(?:email|mail|message)\s+"
+    r"(?:uid\s+)?#?(?P<uid>\d+)$",
+    re.I,
+)
+_EMAIL_SUMMARIZE = re.compile(
+    r"^summari[sz]e\s+(?:email|mail|message)\s+"
+    r"(?:uid\s+)?#?(?P<uid>\d+)$",
+    re.I,
+)
+_EMAIL_REPLY = re.compile(
+    r"^(?:reply|respond)\s+(?:to\s+)?(?:email|mail|message)\s+"
+    r"(?:uid\s+)?#?(?P<uid>\d+)$",
+    re.I,
+)
+_POMODORO_START = re.compile(
+    r"^(?:start|begin)\s+(?:a\s+)?(?:(?P<minutes>\d+)\s+minute\s+)?"
+    r"pomodoro(?:\s+for\s+(?P<minutes2>\d+)\s+minutes?)?$",
+    re.I,
+)
+_POMODORO_STATUS = re.compile(
+    r"^(?:pomodoro\s+status|(?:what(?:'s| is)\s+)?(?:my\s+)?pomodoro"
+    r"(?:\s+status)?|how(?:'s| is)\s+my\s+pomodoro)$",
+    re.I,
+)
+_POMODORO_STOP = re.compile(
+    r"^(?:stop|end|cancel)\s+(?:the\s+)?pomodoro(?:\s+session)?$",
+    re.I,
+)
+_POMODORO_SKIP = re.compile(
+    r"^(?:skip|next)\s+(?:the\s+)?pomodoro(?:\s+phase)?$",
+    re.I,
+)
+_CLIPBOARD_LIST = re.compile(
+    r"^(?:show|list|view)\s+(?:my\s+)?clipboard\s+history$", re.I
+)
+_CLIPBOARD_SEARCH = re.compile(
+    r"^search\s+(?:my\s+)?clipboard(?:\s+history)?\s+for\s+(?P<query>.+)$",
+    re.I,
+)
+_CLIPBOARD_SHOW = re.compile(
+    r"^(?:show|open|view)\s+clipboard\s+(?:entry|item)\s+#?(?P<id>\d+)$",
+    re.I,
+)
+_CLIPBOARD_DELETE = re.compile(
+    r"^(?:delete|remove)\s+clipboard\s+(?:entry|item)\s+#?(?P<id>\d+)$",
+    re.I,
+)
+_CLIPBOARD_CLEAR = re.compile(
+    r"^(?:clear|delete)\s+(?:my\s+)?clipboard\s+history$", re.I
+)
+_SUMMARY_DAILY = re.compile(
+    r"^(?:daily\s+summary|summary\s+(?:for\s+)?(?:today|my\s+day)"
+    r"|summari[sz]e\s+(?:my\s+)?day|what\s+did\s+i\s+do(?:\s+today)?)$",
+    re.I,
+)
+_SUMMARY_MEETING = re.compile(
+    r"^(?:summari[sz]e|summary\s+of)\s+(?:a\s+)?meeting\s+"
+    r"(?P<body>.+)$",
+    re.I,
+)
 
 
 def recognize_utilities(text):
@@ -561,6 +903,326 @@ def recognize_todo(text):
         0.9,
         {"id": int(match.group("id")), "minutes": max(1, seconds // 60)},
     )
+  return None
+
+
+def recognize_plan(text):
+  """Recognize a request for a daily or weekly to-do agenda."""
+  source = (text or "").strip().rstrip("?.!")
+  if not source:
+    return None
+  match = _PLAN_WEEK.match(source)
+  if match:
+    when = match.groupdict().get("when")
+    return Intent(
+        "plan_week",
+        0.9,
+        {"when": f"{when} week" if when else ""},
+    )
+  match = _PLAN_DAY.match(source)
+  if match:
+    when = match.group("when_for") or match.group("when_bare") or ""
+    return Intent("plan_day", 0.9, {"when": _clean(when)})
+  return None
+
+
+def recognize_notes(text):
+  """Recognize quick notes, listing, showing, search and deletion."""
+  source = (text or "").strip().rstrip("?.!")
+  if not source:
+    return None
+  match = _NOTE_ADD.match(source) or _NOTE_ALT.match(source)
+  if match:
+    body = (
+        match.groupdict().get("body")
+        or match.groupdict().get("jot")
+        or match.groupdict().get("quick")
+        or match.groupdict().get("plain")
+        or ""
+    )
+    body = re.sub(r"^to\s+", "", _clean(body), flags=re.I)
+    if len(body) >= 2:
+      return Intent("note_add", 0.92, {"content": body})
+  if _NOTE_LIST.match(source):
+    return Intent("note_list", 0.9, {})
+  for pattern, name in (
+      (_NOTE_SHOW, "note_show"),
+      (_NOTE_DELETE, "note_delete"),
+  ):
+    match = pattern.match(source)
+    if match:
+      return Intent(name, 0.9, {"id": int(match.group("id"))})
+  match = _NOTE_SEARCH.match(source)
+  if match:
+    query = _clean(
+        match.groupdict().get("query")
+        or match.groupdict().get("about")
+        or match.groupdict().get("say")
+        or ""
+    )
+    if len(query) >= 2:
+      return Intent("note_search", 0.9, {"query": query})
+  return None
+
+
+def recognize_habits(text):
+  """Recognize daily habit creation, check-ins, streaks and edits."""
+  source = (text or "").strip().rstrip("?.!")
+  if not source:
+    return None
+  match = _HABIT_ADD.match(source) or _HABIT_ADD_ALT.match(source)
+  if match:
+    parsed = parse_habit_input(match.group("body"))
+    if len(parsed.get("title", "")) >= 2:
+      entities = {"title": parsed["title"]}
+      if parsed.get("reminder_time"):
+        entities["reminder_time"] = parsed["reminder_time"]
+      return Intent("habit_add", 0.92, entities)
+  if _HABIT_LIST.match(source):
+    return Intent("habit_list", 0.9, {})
+  if _HABIT_STATS.match(source):
+    return Intent("habit_stats", 0.9, {})
+  for pattern, name in (
+      (_HABIT_SHOW, "habit_show"),
+      (_HABIT_UNDO, "habit_undo"),
+      (_HABIT_DELETE, "habit_delete"),
+  ):
+    match = pattern.match(source)
+    if match:
+      return Intent(name, 0.9, {"id": int(match.group("id"))})
+  match = _HABIT_DONE.match(source)
+  if match:
+    identifier = (
+        match.groupdict().get("id")
+        or match.groupdict().get("id2")
+        or match.groupdict().get("id3")
+    )
+    if identifier:
+      return Intent("habit_done", 0.9, {"id": int(identifier)})
+  return None
+
+
+def recognize_goals(text):
+  """Recognize goal creation, progress, completion and deletion."""
+  source = (text or "").strip().rstrip("?.!")
+  if not source:
+    return None
+  match = _GOAL_ADD.match(source) or _GOAL_ADD_ALT.match(source)
+  if match:
+    parsed = parse_goal_input(match.group("body"))
+    if len(parsed.get("title", "")) >= 2:
+      entities = {"title": parsed["title"]}
+      if parsed.get("target_value") is not None:
+        entities["target_value"] = parsed["target_value"]
+      if parsed.get("unit"):
+        entities["unit"] = parsed["unit"]
+      if parsed.get("target_date"):
+        entities["target_date"] = parsed["target_date"]
+      return Intent("goal_add", 0.92, entities)
+  if _GOAL_LIST.match(source):
+    return Intent("goal_list", 0.9, {})
+  for pattern, name in (
+      (_GOAL_SHOW, "goal_show"),
+      (_GOAL_COMPLETE, "goal_complete"),
+      (_GOAL_REOPEN, "goal_reopen"),
+      (_GOAL_DELETE, "goal_delete"),
+  ):
+    match = pattern.match(source)
+    if match:
+      identifier = match.groupdict().get("id") or match.groupdict().get("id2")
+      if identifier:
+        return Intent(name, 0.9, {"id": int(identifier)})
+  match = _GOAL_PROGRESS.match(source)
+  if match:
+    identifier = (
+        match.groupdict().get("id")
+        or match.groupdict().get("id2")
+        or match.groupdict().get("id3")
+        or match.groupdict().get("id4")
+    )
+    value = (
+        match.groupdict().get("value")
+        or match.groupdict().get("value2")
+        or match.groupdict().get("value3")
+        or match.groupdict().get("value4")
+    )
+    if identifier and value:
+      return Intent(
+          "goal_progress",
+          0.9,
+          {
+              "id": int(identifier),
+              "value": float(value),
+              "add": bool(
+                  match.groupdict().get("value3")
+                  or match.groupdict().get("value4")
+              ),
+          },
+      )
+  return None
+
+
+def recognize_time_tracking(text):
+  """Recognize starting, stopping and reporting tracked time."""
+  source = (text or "").strip().rstrip("?.!")
+  if not source:
+    return None
+  match = _TIME_START.match(source)
+  if match:
+    label = _clean(match.group("label") or match.group("clock") or "")
+    if len(label) >= 2:
+      return Intent("time_start", 0.92, {"label": label})
+  if _TIME_STOP.match(source):
+    return Intent("time_stop", 0.92, {})
+  if _TIME_STATUS.match(source):
+    return Intent("time_status", 0.9, {})
+  match = _TIME_WEEK.match(source)
+  if match:
+    return Intent(
+        "time_week", 0.9, {"start": _clean(match.group("start") or "")}
+    )
+  if _TIME_LIST.match(source):
+    return Intent("time_list", 0.9, {})
+  match = _TIME_DELETE.match(source)
+  if match:
+    return Intent("time_delete", 0.9, {"id": int(match.group("id"))})
+  match = _TIME_REPORT.match(source)
+  if match:
+    day = _clean(match.group("day") or match.group("day2") or "")
+    try:
+      if day:
+        _report_date(day)
+    except Exception:
+      day = ""
+    return Intent("time_report", 0.9, {"day": day})
+  return None
+
+
+def recognize_calendar(text):
+  """Recognize event creation, daily agendas and event controls."""
+  source = (text or "").strip().rstrip("?.!")
+  if not source:
+    return None
+  match = _CALENDAR_ADD.match(source)
+  if match:
+    parsed = parse_event_input(match.group("body"))
+    if len(parsed.get("title", "")) >= 2:
+      entities = {
+          "title": parsed["title"],
+          "duration_minutes": parsed["duration_minutes"],
+      }
+      if parsed.get("details"):
+        entities["details"] = parsed["details"]
+      if parsed.get("start_at") is not None:
+        entities["start_at"] = parsed["start_at"].isoformat(
+            timespec="minutes"
+        )
+      return Intent("calendar_add", 0.92, entities)
+  match = _CALENDAR_AGENDA.match(source)
+  if match:
+    day = _clean(match.group("day") or match.group("day2") or "")
+    return Intent("calendar_agenda", 0.9, {"day": day})
+  for pattern, name in (
+      (_CALENDAR_SHOW, "calendar_show"),
+      (_CALENDAR_DELETE, "calendar_delete"),
+  ):
+    match = pattern.match(source)
+    if match:
+      return Intent(name, 0.9, {"id": int(match.group("id"))})
+  return None
+
+
+def recognize_email(text):
+  """Recognize local drafts and explicitly connected mailbox actions."""
+  source = (text or "").strip().rstrip("?.!")
+  if not source:
+    return None
+  match = _EMAIL_DRAFT.match(source)
+  if match:
+    parsed = parse_email_input(match.group("body"))
+    if parsed.get("recipient"):
+      entities = {
+          "recipient": parsed["recipient"],
+          "subject": parsed["subject"],
+          "body": parsed["body"],
+      }
+      return Intent("email_draft", 0.92, entities)
+  if _EMAIL_LIST.match(source):
+    return Intent("email_list", 0.9, {})
+  if _EMAIL_SEARCH.match(source):
+    query = _clean(_EMAIL_SEARCH.match(source).group("query"))
+    if len(query) >= 2:
+      return Intent("email_search", 0.9, {"query": query})
+  for pattern, name, key in (
+      (_EMAIL_SHOW, "email_show", "id"),
+      (_EMAIL_SEND, "email_send", "id"),
+      (_EMAIL_DELETE, "email_delete", "id"),
+      (_EMAIL_READ, "email_read", "uid"),
+      (_EMAIL_SUMMARIZE, "email_summarize", "uid"),
+      (_EMAIL_REPLY, "email_reply", "uid"),
+  ):
+    match = pattern.match(source)
+    if match:
+      return Intent(name, 0.9, {key: int(match.group(key))})
+  return None
+
+
+def recognize_pomodoro(text):
+  """Recognize work/break phase controls for the timer-backed Pomodoro."""
+  source = (text or "").strip().rstrip("?.!")
+  if not source:
+    return None
+  match = _POMODORO_START.match(source)
+  if match:
+    value = match.group("minutes") or match.group("minutes2")
+    return Intent(
+        "pomodoro_start", 0.92, {"minutes": int(value) if value else 0}
+    )
+  if _POMODORO_STATUS.match(source):
+    return Intent("pomodoro_status", 0.9, {})
+  if _POMODORO_STOP.match(source):
+    return Intent("pomodoro_stop", 0.9, {})
+  if _POMODORO_SKIP.match(source):
+    return Intent("pomodoro_skip", 0.9, {})
+  return None
+
+
+def recognize_clipboard_history(text):
+  """Recognize clipboard history listing, search and cleanup."""
+  source = (text or "").strip().rstrip("?.!")
+  if not source:
+    return None
+  if _CLIPBOARD_LIST.match(source):
+    return Intent("clipboard_list", 0.9, {})
+  if _CLIPBOARD_CLEAR.match(source):
+    return Intent("clipboard_clear", 0.9, {})
+  match = _CLIPBOARD_SEARCH.match(source)
+  if match:
+    query = _clean(match.group("query"))
+    if len(query) >= 2:
+      return Intent("clipboard_search", 0.9, {"query": query})
+  for pattern, name in (
+      (_CLIPBOARD_SHOW, "clipboard_show"),
+      (_CLIPBOARD_DELETE, "clipboard_delete"),
+  ):
+    match = pattern.match(source)
+    if match:
+      return Intent(name, 0.9, {"id": int(match.group("id"))})
+  return None
+
+
+def recognize_summaries(text):
+  """Recognize deterministic daily and meeting summary requests."""
+  source = (text or "").strip().rstrip("?.!")
+  if not source:
+    return None
+  if _SUMMARY_DAILY.match(source):
+    return Intent("summary_daily", 0.9, {})
+  match = _SUMMARY_MEETING.match(source)
+  if match:
+    body = _clean(match.group("body"))
+    if len(body) >= 2:
+      return Intent("summary_meeting", 0.9, {"text": body})
   return None
 
 
@@ -1609,6 +2271,36 @@ class IntentRouter:
       return None
 
     intent = recognize_tasks(text)
+    if intent is not None:
+      return intent
+    intent = recognize_plan(text)
+    if intent is not None:
+      return intent
+    intent = recognize_notes(text)
+    if intent is not None:
+      return intent
+    intent = recognize_habits(text)
+    if intent is not None:
+      return intent
+    intent = recognize_goals(text)
+    if intent is not None:
+      return intent
+    intent = recognize_time_tracking(text)
+    if intent is not None:
+      return intent
+    intent = recognize_calendar(text)
+    if intent is not None:
+      return intent
+    intent = recognize_email(text)
+    if intent is not None:
+      return intent
+    intent = recognize_summaries(text)
+    if intent is not None:
+      return intent
+    intent = recognize_pomodoro(text)
+    if intent is not None:
+      return intent
+    intent = recognize_clipboard_history(text)
     if intent is not None:
       return intent
     intent = recognize_todo(text)

@@ -40,6 +40,7 @@ PRIORITY_WORDS = {
     "critical": "critical",
     "urgent": "critical",
 }
+_PRIORITY_RANK = {"critical": 0, "high": 1, "normal": 2, "low": 3}
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS todo_items (
@@ -75,8 +76,88 @@ _TIME = re.compile(
     re.I,
 )
 _TIME_24 = re.compile(r"\bat\s+(?P<hour>\d{1,2}):(?P<minute>\d{2})\b")
+_TIME_BARE = re.compile(
+    r"\bat\s+(?P<hour>\d{1,2})(?::(?P<minute>\d{2}))?\b", re.I
+)
+_TIME_OF_DAY = re.compile(
+    r"\b(?:(?:this|in\s+the)\s+)?"
+    r"(?P<value>morning|afternoon|evening|night|tonight|noon|midnight)\b",
+    re.I,
+)
+_END_OF = re.compile(
+    r"\bend\s+of\s+(?P<value>day|week|month)\b", re.I
+)
 _WEEKDAY = re.compile(
     r"\b(?P<weekday>" + "|".join(WEEKDAYS) + r")\b", re.I
+)
+_AMOUNT_WORDS = {
+    "a": 1,
+    "an": 1,
+    "one": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+    "ten": 10,
+    "eleven": 11,
+    "twelve": 12,
+}
+_MONTHS = {
+    "january": 1,
+    "jan": 1,
+    "february": 2,
+    "feb": 2,
+    "march": 3,
+    "mar": 3,
+    "april": 4,
+    "apr": 4,
+    "may": 5,
+    "june": 6,
+    "jun": 6,
+    "july": 7,
+    "jul": 7,
+    "august": 8,
+    "aug": 8,
+    "september": 9,
+    "sep": 9,
+    "sept": 9,
+    "october": 10,
+    "oct": 10,
+    "november": 11,
+    "nov": 11,
+    "december": 12,
+    "dec": 12,
+}
+_MONTH_NAMES = "|".join(sorted(_MONTHS, key=len, reverse=True))
+_RELATIVE_DATE = re.compile(
+    r"\b(?:in\s+(?P<amount1>\d{1,3}|a|an|one|two|three|four|five|six|"
+    r"seven|eight|nine|ten|eleven|twelve)\s+"
+    r"(?P<unit1>days?|weeks?|months?)"
+    r"|(?P<amount2>\d{1,3}|a|an|one|two|three|four|five|six|seven|eight|"
+    r"nine|ten|eleven|twelve)\s+(?P<unit2>days?|weeks?|months?)\s+"
+    r"from\s+(?:now|today))\b",
+    re.I,
+)
+_RELATIVE_DURATION = re.compile(
+    r"\bin\s+(?P<amount>\d{1,3}|a|an|one|two|three|four|five|six|seven|"
+    r"eight|nine|ten|eleven|twelve)\s+"
+    r"(?P<unit>minutes?|mins?|hours?|hrs?|days?|weeks?)\b",
+    re.I,
+)
+_MONTH_DAY = re.compile(
+    r"\b(?:(?P<month>" + _MONTH_NAMES + r")\.?\s+"
+    r"(?P<day>\d{1,2})(?:st|nd|rd|th)?|"
+    r"(?P<day2>\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+)?"
+    r"(?P<month2>" + _MONTH_NAMES + r"))\b",
+    re.I,
+)
+_DAY_OF_MONTH = re.compile(
+    r"\b(?:on\s+)?(?:the\s+)?(?P<day>\d{1,2})(?:st|nd|rd|th)\b",
+    re.I,
 )
 _DUE = re.compile(r"\bdue\s+(?P<when>.+)$", re.I)
 _REMIND = re.compile(r"\bremind(?:\s+me)?\s+(?P<when>.+)$", re.I)
@@ -123,8 +204,66 @@ class TodoItem:
         )
 
 
+@dataclass(frozen=True)
+class PlanDay:
+    """The open to-dos scheduled for one day of a plan."""
+
+    day: date
+    items: tuple[TodoItem, ...] = ()
+
+
+@dataclass(frozen=True)
+class ProductivityPlan:
+    """A read-only snapshot of open to-dos arranged by day."""
+
+    start: date
+    days: tuple[PlanDay, ...]
+    overdue: tuple[TodoItem, ...] = ()
+    unscheduled: tuple[TodoItem, ...] = ()
+    later: tuple[TodoItem, ...] = ()
+    total_open: int = 0
+
+    @property
+    def end(self):
+        return self.start + timedelta(days=len(self.days) - 1)
+
+
+@dataclass(frozen=True)
+class _DateMatch:
+    """A date phrase and the span it occupies in the source text."""
+
+    target: date
+    phrase: str
+    start: int
+    end: int
+
+
 def _now():
     return datetime.now().replace(microsecond=0)
+
+
+def _plan_date(value, now=None):
+    """Resolve a plan date from a date, datetime or deterministic phrase."""
+    if value in (None, ""):
+        return (now or _now()).date()
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    text = " ".join(str(value).split()).strip()
+    if not text:
+        return (now or _now()).date()
+    if text.lower() in {"this week", "this week's"}:
+        return (now or _now()).date()
+    try:
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+            return date.fromisoformat(text)
+    except ValueError:
+        pass
+    parsed = parse_when(text, now=now, prefer_future=False)
+    if parsed is None:
+        raise ProductivityError("I couldn't understand that plan date")
+    return parsed.date()
 
 
 def _iso(value):
@@ -164,7 +303,11 @@ def _recurrence(value):
 
 
 def _clock(text):
-    """Return ``(hour, minute)`` from a simple clock phrase, or None."""
+    """Return ``(hour, minute)`` from a clock phrase, or None.
+
+    Besides explicit clock times, the deterministic vocabulary accepts
+    morning/afternoon/evening/night, noon, midnight and end of day/week/month.
+    """
     match = _TIME.search(text or "")
     if match:
         hour = int(match.group("hour"))
@@ -181,34 +324,274 @@ def _clock(text):
         if not 0 <= hour <= 23 or minute > 59:
             raise ProductivityError("that clock time is invalid")
         return hour, minute
+    match = _TIME_BARE.search(text or "")
+    if match:
+        hour = int(match.group("hour"))
+        minute = int(match.group("minute") or 0)
+        if not 0 <= hour <= 23 or minute > 59:
+            raise ProductivityError("that clock time is invalid")
+        lowered = str(text or "").lower()
+        # A bare "at 5" is far more likely to mean after work than 5 a.m.
+        # An afternoon/evening word makes a bare 7 mean 19:00.
+        late = re.search(r"\b(?:afternoon|evening|night|tonight)\b", lowered)
+        morning = re.search(r"\bmorning\b", lowered)
+        if 1 <= hour <= 6 and not morning:
+            hour += 12
+        elif 7 <= hour <= 11 and late:
+            hour += 12
+        return hour, minute
+    match = _END_OF.search(text or "")
+    if match:
+        return 17, 0
+    if re.search(r"\beod\b", text or "", re.I):
+        return 17, 0
+    match = _TIME_OF_DAY.search(text or "")
+    if match:
+        value = match.group("value").lower()
+        return {
+            "morning": (9, 0),
+            "afternoon": (15, 0),
+            "evening": (18, 0),
+            "night": (20, 0),
+            "tonight": (20, 0),
+            "noon": (12, 0),
+            "midnight": (0, 0),
+        }[value]
     return None
 
 
-def _date_from_text(text, now):
+def _amount(value):
+    """Read a small number written as digits or an English word."""
+    text = str(value or "").strip().lower()
+    if text.isdigit():
+        return int(text)
+    return _AMOUNT_WORDS.get(text, 0)
+
+
+def _relative_seconds(text):
+    """Return a relative duration in seconds, including word amounts."""
+    seconds = parse_duration(text)
+    if seconds:
+        return seconds
+    lowered = str(text or "").lower()
+    if re.search(r"\bhalf\s+(?:an\s+)?hour\b", lowered):
+        return 30 * 60
+    if re.search(r"\bquarter\s+(?:of\s+)?(?:an\s+)?hour\b", lowered):
+        return 15 * 60
+    match = _RELATIVE_DURATION.search(lowered)
+    if not match:
+        return None
+    amount = _amount(match.group("amount"))
+    unit = match.group("unit").lower()
+    if unit.startswith("min"):
+        factor = 60
+    elif unit.startswith("h"):
+        factor = 60 * 60
+    elif unit.startswith("d"):
+        factor = 24 * 60 * 60
+    else:
+        factor = 7 * 24 * 60 * 60
+    return amount * factor if amount else None
+
+
+def _relative_duration_match(text):
+    """Return an in/from duration and the span it occupies, or None."""
     lowered = " ".join(str(text or "").lower().split())
-    if "tonight" in lowered:
-        return now.date()
+    match = _RELATIVE_DURATION.search(lowered)
+    if match:
+        amount = _amount(match.group("amount"))
+        unit = match.group("unit").lower()
+        if unit.startswith("min"):
+            factor = 60
+        elif unit.startswith("h"):
+            factor = 60 * 60
+        elif unit.startswith("d"):
+            factor = 24 * 60 * 60
+        else:
+            factor = 7 * 24 * 60 * 60
+        if amount:
+            return amount * factor, match
+    for pattern, seconds in (
+        (r"\bin\s+half\s+(?:an\s+)?hour\b", 30 * 60),
+        (r"\bin\s+a\s+quarter\s+(?:of\s+)?(?:an\s+)?hour\b", 15 * 60),
+    ):
+        match = re.search(pattern, lowered)
+        if match:
+            return seconds, match
+    return None
+
+
+def _relative_date_match(lowered, now):
+    """Match in/from date phrases that find_date_reference does not cover."""
+    match = _RELATIVE_DATE.search(lowered)
+    if not match:
+        return None
+    amount = _amount(match.group("amount1") or match.group("amount2"))
+    unit = (match.group("unit1") or match.group("unit2")).lower()
+    if not amount:
+        return None
+    if unit.startswith("month"):
+        target = _add_months(now, amount).date()
+    else:
+        days = amount * (7 if unit.startswith("week") else 1)
+        target = now.date() + timedelta(days=days)
+    return _DateMatch(target, match.group(0), match.start(), match.end())
+
+
+def _next_calendar_date(month, day, base):
+    """Return the next real occurrence of a month/day, or None."""
+    for year in range(base.year, base.year + 9):
+        try:
+            candidate = date(year, month, day)
+        except ValueError:
+            continue
+        if candidate >= base:
+            return candidate
+    return None
+
+
+def _next_day_of_month(day, base):
+    """Return the next month containing the requested day number."""
+    for offset in range(0, 13):
+        month = base.month - 1 + offset
+        year = base.year + month // 12
+        month = month % 12 + 1
+        try:
+            candidate = date(year, month, day)
+        except ValueError:
+            continue
+        if candidate >= base:
+            return candidate
+    return None
+
+
+def _date_match(text, now):
+    """Find the first understood date phrase and its source span."""
+    lowered = " ".join(str(text or "").lower().split())
+    relative = _relative_date_match(lowered, now)
+    if relative is not None:
+        return relative
+
     reference = find_date_reference(lowered, now.date())
     if reference:
         try:
-            return date.fromisoformat(reference["date"])
+            target = date.fromisoformat(reference["date"])
         except (KeyError, ValueError):
-            pass
+            target = None
+        if target is not None:
+            phrase = reference["phrase"]
+            start = lowered.find(phrase)
+            return _DateMatch(target, phrase, start, start + len(phrase))
+
+    match = _MONTH_DAY.search(lowered)
+    if match:
+        month_name = (match.group("month") or match.group("month2")).lower()
+        day = int(match.group("day") or match.group("day2"))
+        target = _next_calendar_date(_MONTHS[month_name], day, now.date())
+        if target is not None:
+            return _DateMatch(target, match.group(0), match.start(), match.end())
+
+    for pattern, target in (
+        (r"\bnext\s+week\b", now.date() + timedelta(days=7)),
+        (r"\bnext\s+month\b", _add_months(now, 1).date()),
+    ):
+        match = re.search(pattern, lowered)
+        if match:
+            return _DateMatch(target, match.group(0), match.start(), match.end())
+
+    match = re.search(r"\bthis\s+weekend\b", lowered)
+    if match:
+        offset = (5 - now.weekday()) % 7
+        target = now.date() + timedelta(days=offset)
+        return _DateMatch(target, match.group(0), match.start(), match.end())
+
+    match = re.search(r"\bend\s+of\s+week\b", lowered)
+    if match:
+        offset = (4 - now.weekday()) % 7
+        target = now.date() + timedelta(days=offset)
+        return _DateMatch(target, match.group(0), match.start(), match.end())
+
+    match = re.search(r"\bend\s+of\s+month\b", lowered)
+    if match:
+        last_day = calendar.monthrange(now.year, now.month)[1]
+        target = date(now.year, now.month, last_day)
+        return _DateMatch(target, match.group(0), match.start(), match.end())
+
+    match = re.search(r"\bend\s+of\s+day\b", lowered) or re.search(
+        r"\beod\b", lowered
+    )
+    if match:
+        return _DateMatch(
+            now.date(), match.group(0), match.start(), match.end()
+        )
+
+    match = re.search(r"\btonight\b", lowered)
+    if match:
+        return _DateMatch(
+            now.date(), match.group(0), match.start(), match.end()
+        )
+
+    match = _DAY_OF_MONTH.search(lowered)
+    if match:
+        target = _next_day_of_month(int(match.group("day")), now.date())
+        if target is not None:
+            return _DateMatch(target, match.group(0), match.start(), match.end())
+
     match = _WEEKDAY.search(lowered)
     if match:
         target = WEEKDAYS[match.group("weekday").lower()]
         offset = (target - now.weekday()) % 7
-        return now.date() + timedelta(days=offset)
+        return _DateMatch(
+            now.date() + timedelta(days=offset),
+            match.group(0),
+            match.start(),
+            match.end(),
+        )
     return None
+
+
+def _roll_past_time(result, lowered, now):
+    """Move a same-day past time to the next sensible occurrence."""
+    if "end of month" in lowered:
+        month = result.month
+        year = result.year + month // 12
+        month = month % 12 + 1
+        last_day = calendar.monthrange(year, month)[1]
+        return result.replace(year=year, month=month, day=last_day)
+    month_day = _MONTH_DAY.search(lowered)
+    if month_day:
+        month_name = (month_day.group("month") or month_day.group("month2"))
+        day = int(month_day.group("day") or month_day.group("day2"))
+        target = _next_calendar_date(
+            _MONTHS[month_name.lower()], day, result.date() + timedelta(days=1)
+        )
+        if target is not None:
+            return datetime.combine(target, result.time())
+    day_match = _DAY_OF_MONTH.search(lowered)
+    if day_match:
+        target = _next_day_of_month(
+            int(day_match.group("day")), result.date() + timedelta(days=1)
+        )
+        if target is not None:
+            return datetime.combine(target, result.time())
+    if (
+        _WEEKDAY.search(lowered)
+        or "weekend" in lowered
+        or "end of week" in lowered
+    ):
+        return result + timedelta(days=7)
+    return result + timedelta(days=1)
 
 
 def parse_when(text, now=None, prefer_future=True):
     """Turn a due/reminder phrase into a local datetime.
 
     The parser deliberately handles a small, deterministic vocabulary: today,
-    tomorrow, tonight, weekdays, relative days/weeks and ISO dates, with an
+    tomorrow, tonight, mornings and evenings, weekdays, weekend, next week or
+    month, month/day names, relative days/weeks/months and ISO dates, with an
     optional clock time. Unrecognized text returns ``None`` instead of being
-    guessed.
+    guessed. A bare hour such as ``at 5`` means the afternoon; use ``5am`` when
+    the morning is intended.
     """
     now = now or _now()
     phrase = " ".join(str(text or "").strip().split())
@@ -216,10 +599,20 @@ def parse_when(text, now=None, prefer_future=True):
         return None
     lowered = phrase.lower()
     if re.search(r"\bin\b", lowered):
-        seconds = parse_duration(lowered)
+        seconds = _relative_seconds(lowered)
         if seconds:
-            return now + timedelta(seconds=seconds)
-    target_date = _date_from_text(lowered, now)
+            clock = _clock(lowered)
+            if clock is None:
+                return now + timedelta(seconds=seconds)
+            base = now + timedelta(seconds=seconds)
+            target_date = base.date()
+        else:
+            target_date = None
+    else:
+        target_date = None
+    if target_date is None:
+        match = _date_match(lowered, now)
+        target_date = match.target if match is not None else None
     clock = _clock(lowered)
     if target_date is None and clock is None:
         return None
@@ -232,13 +625,8 @@ def parse_when(text, now=None, prefer_future=True):
     result = datetime.combine(target_date, datetime.min.time()).replace(
         hour=hour, minute=minute
     )
-    if prefer_future and result <= now and target_date == now.date():
-        reference = find_date_reference(lowered, now.date())
-        weekday_only = _WEEKDAY.search(lowered) and reference is None
-        if weekday_only:
-            result += timedelta(days=7)
-        else:
-            result += timedelta(days=1)
+    if prefer_future and result < now and target_date == now.date():
+        result = _roll_past_time(result, lowered, now)
     return result
 
 
@@ -280,36 +668,42 @@ def parse_todo_input(text, now=None):
             body = (body[: match.start()] + " " + body[match.end():]).strip()
 
     if due_at is None:
-        reference = find_date_reference(body, now.date())
+        date_match = _date_match(body, now)
         clock = _clock(body)
-        if reference:
-            try:
-                target = date.fromisoformat(reference["date"])
-            except (KeyError, ValueError):
-                target = None
-            if target is not None:
-                hour, minute = clock or (9, 0)
-                due_at = datetime.combine(
-                    target, datetime.min.time()
-                ).replace(hour=hour, minute=minute)
-                body = body.replace(reference["phrase"], " ", 1)
-                if clock:
-                    body = _remove_clock(body)
+        if date_match is not None:
+            phrase_text = body
+            hour, minute = clock or (9, 0)
+            due_at = datetime.combine(
+                date_match.target, datetime.min.time()
+            ).replace(hour=hour, minute=minute)
+            body = (
+                body[: date_match.start] + " " + body[date_match.end:]
+            ).strip()
+            if clock is not None:
+                body = _remove_clock(body)
+            if due_at < now and date_match.target == now.date():
+                due_at = _roll_past_time(due_at, phrase_text, now)
         elif clock is not None:
             hour, minute = clock
             due_at = datetime.combine(
                 now.date(), datetime.min.time()
             ).replace(hour=hour, minute=minute)
-            if due_at <= now:
+            if due_at < now:
                 due_at += timedelta(days=1)
             body = _remove_clock(body)
+
+    if due_at is None:
+        relative = _relative_duration_match(body)
+        if relative is not None:
+            seconds, match = relative
+            due_at = now + timedelta(seconds=seconds)
+            body = (body[: match.start()] + " " + body[match.end():]).strip()
 
     if due_at is None and recurrence != "none":
         due_at = (now + timedelta(days=1)).replace(hour=9, minute=0,
                                                    second=0, microsecond=0)
 
-    title = re.sub(r"\s+", " ", body).strip(" ,.;:-")
-    title = re.sub(r"^to\s+", "", title, flags=re.I).strip()
+    title = _clean_title(body)
     if due_at is None:
         due_at = remind_at
     return {
@@ -324,7 +718,22 @@ def parse_todo_input(text, now=None):
 def _remove_clock(text):
     cleaned = _TIME.sub(" ", text)
     cleaned = _TIME_24.sub(" ", cleaned)
+    cleaned = _TIME_BARE.sub(" ", cleaned)
+    cleaned = _END_OF.sub(" ", cleaned)
+    cleaned = re.sub(r"\beod\b", " ", cleaned, flags=re.I)
+    cleaned = _TIME_OF_DAY.sub(" ", cleaned)
     return " ".join(cleaned.split())
+
+
+def _clean_title(text):
+    """Remove dangling prepositions left after a date phrase is extracted."""
+    title = re.sub(r"\s+", " ", text).strip(" ,.;:-")
+    title = re.sub(r"^to\s+", "", title, flags=re.I).strip()
+    title = re.sub(r"^(?:on|by|at|due)\s+", "", title, flags=re.I).strip()
+    title = re.sub(
+        r"\s+(?:on|by|at|due|before|after)$", "", title, flags=re.I
+    ).strip()
+    return title
 
 
 def _add_months(value, months=1):
@@ -371,6 +780,69 @@ def format_todo(item, now=None):
     if item.status != OPEN:
         parts.append(item.status)
     return " - ".join(parts)
+
+
+def _plan_order(item):
+    """Order by deadline, then priority, then creation id."""
+    return (
+        item.due_at or datetime.max,
+        _PRIORITY_RANK.get(item.priority, 2),
+        item.id,
+    )
+
+
+def _plan_range(start, end):
+    if start.year != end.year:
+        return f"{start.strftime('%d %B %Y')} - {end.strftime('%d %B %Y')}"
+    if start.month != end.month:
+        return f"{start.strftime('%d %B')} - {end.strftime('%d %B %Y')}"
+    return f"{start.strftime('%d')}-{end.strftime('%d %B %Y')}"
+
+
+def _plan_section(lines, title, items, now, limit=10):
+    if not items:
+        return
+    lines.append(f"{title}:")
+    for item in items[:limit]:
+        lines.append(f"  {format_todo(item, now)}")
+    hidden = len(items) - limit
+    if hidden > 0:
+        lines.append(f"  ... and {hidden} more")
+
+
+def format_plan(plan, now=None):
+    """Render a daily or weekly plan for the console and voice reply."""
+    now = now or _now()
+    daily = len(plan.days) == 1
+    if daily:
+        heading = f"Daily plan for {plan.start.strftime('%A %d %B %Y')}:"
+    else:
+        heading = f"Weekly plan for {_plan_range(plan.start, plan.end)}:"
+    lines = [heading]
+    if plan.total_open == 0:
+        lines.append("No open to-dos.")
+        return "\n".join(lines)
+
+    _plan_section(lines, "Overdue", plan.overdue, now)
+    for entry in plan.days:
+        if entry.day == now.date():
+            label = f"Today - {entry.day.strftime('%A %d %B')}"
+        else:
+            label = entry.day.strftime("%A %d %B")
+        if entry.items:
+            _plan_section(lines, label, entry.items, now, limit=8)
+        else:
+            lines.append(f"{label}: no items")
+    _plan_section(lines, "Unscheduled", plan.unscheduled, now)
+    _plan_section(lines, "Upcoming" if daily else "Later", plan.later, now)
+
+    word = "item" if plan.total_open == 1 else "items"
+    summary = f"{plan.total_open} open {word}"
+    if plan.overdue:
+        summary += f", {len(plan.overdue)} overdue"
+    lines.append("")
+    lines.append(summary + ".")
+    return "\n".join(lines)
 
 
 class ProductivityStore:
@@ -637,6 +1109,45 @@ class ProductivityService:
         return self._store.list(
             status=status,
             limit=limit or self._config.max_items,
+        )
+
+    def daily_plan(self, day=None):
+        """Build a read-only plan for one day, defaulting to today."""
+        return self._plan(_plan_date(day), 1)
+
+    def weekly_plan(self, start=None):
+        """Build a read-only seven-day plan, defaulting to today."""
+        return self._plan(_plan_date(start), 7)
+
+    def _plan(self, start, days):
+        rows = self.list(status=OPEN)
+        schedule = {start + timedelta(days=offset): [] for offset in range(days)}
+        end = start + timedelta(days=days)
+        overdue = []
+        unscheduled = []
+        later = []
+        for item in rows:
+            if item.due_at is None:
+                unscheduled.append(item)
+                continue
+            due_day = item.due_at.date()
+            if due_day < start:
+                overdue.append(item)
+            elif due_day >= end:
+                later.append(item)
+            else:
+                schedule[due_day].append(item)
+        for items in schedule.values():
+            items.sort(key=_plan_order)
+        return ProductivityPlan(
+            start=start,
+            days=tuple(
+                PlanDay(day, tuple(items)) for day, items in schedule.items()
+            ),
+            overdue=tuple(sorted(overdue, key=_plan_order)),
+            unscheduled=tuple(sorted(unscheduled, key=_plan_order)),
+            later=tuple(sorted(later, key=_plan_order)),
+            total_open=len(rows),
         )
 
     def update(self, item_id, **fields):

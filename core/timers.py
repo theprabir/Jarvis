@@ -26,7 +26,8 @@ CREATE TABLE IF NOT EXISTS reminders (
   created_at TEXT NOT NULL,
   fired INTEGER NOT NULL DEFAULT 0,
   source TEXT NOT NULL DEFAULT '',
-  source_id INTEGER
+  source_id INTEGER,
+  repeat TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_reminders_due ON reminders (fired, due_at);
 """
@@ -47,6 +48,8 @@ class Scheduled:
   persistent: bool = False
   source: str = ""
   source_id: int | None = None
+  repeat: str = ""
+  on_done: object | None = None
 
   @property
   def remaining_s(self):
@@ -99,11 +102,15 @@ class TimerService:
       self._db.execute(
           "ALTER TABLE reminders ADD COLUMN source_id INTEGER"
       )
+    if "repeat" not in columns:
+      self._db.execute(
+          "ALTER TABLE reminders ADD COLUMN repeat TEXT NOT NULL DEFAULT ''"
+      )
 
   def _load_reminders(self):
     try:
       rows = self._db.execute(
-          "SELECT id, text, due_at, source, source_id FROM reminders"
+          "SELECT id, text, due_at, source, source_id, repeat FROM reminders"
           " WHERE fired = 0 ORDER BY due_at"
       ).fetchall()
     except sqlite3.Error as exc:
@@ -113,15 +120,24 @@ class TimerService:
         due = datetime.fromisoformat(row[2])
       except ValueError:
         due = datetime.now()
+      repeat = row[5] or ""
       if due <= datetime.now():
-        self._db.execute(
-            "UPDATE reminders SET fired = 1 WHERE id = ?", (row[0],)
-        )
-        self._missed.append(self._notification_text(row[3], row[1]))
-        continue
+        if repeat == "daily":
+          due = self._next_daily(due, datetime.now())
+          self._db.execute(
+              "UPDATE reminders SET due_at = ? WHERE id = ?",
+              (due.isoformat(timespec="seconds"), row[0]),
+          )
+        else:
+          self._db.execute(
+              "UPDATE reminders SET fired = 1 WHERE id = ?", (row[0],)
+          )
+          self._missed.append(self._notification_text(row[3], row[1]))
+          continue
       self._timers[("reminder", row[0])] = Scheduled(
           id=row[0], kind="reminder", label=row[1], due_at=due,
           persistent=True, source=row[3] or "", source_id=row[4],
+          repeat=repeat,
       )
       self._next_id = max(self._next_id, row[0] + 1)
     if rows:
@@ -130,7 +146,7 @@ class TimerService:
   def set_notifier(self, callback):
     self._notify = callback
 
-  def add_timer(self, seconds, label=""):
+  def add_timer(self, seconds, label="", on_done=None):
     seconds = int(seconds)
     if not 1 <= seconds <= 24 * 3600:
       raise TimerError("a timer must be between 1 second and 24 hours")
@@ -142,11 +158,14 @@ class TimerService:
           kind="timer",
           label=(label or "").strip(),
           due_at=datetime.now() + timedelta(seconds=seconds),
+          on_done=on_done,
       )
       self._timers[("timer", timer_id)] = entry
     return entry
 
-  def add_reminder(self, due_at, text, source="", source_id=None):
+  def add_reminder(
+      self, due_at, text, source="", source_id=None, repeat=""
+  ):
     body = " ".join(str(text or "").split())
     if not body:
       raise TimerError("a reminder needs some text")
@@ -155,14 +174,17 @@ class TimerService:
     now = datetime.now()
     if due_at <= now:
       raise TimerError("that time has already passed")
+    repeat = str(repeat or "").strip().lower()
+    if repeat not in {"", "daily"}:
+      raise TimerError("repeat must be empty or daily")
     try:
       cursor = self._db.execute(
           "INSERT INTO reminders"
-          " (text, due_at, created_at, fired, source, source_id)"
-          " VALUES (?, ?, ?, 0, ?, ?)",
+          " (text, due_at, created_at, fired, source, source_id, repeat)"
+          " VALUES (?, ?, ?, 0, ?, ?, ?)",
           (body, due_at.isoformat(timespec="seconds"),
            now.isoformat(timespec="seconds"), str(source or ""),
-           int(source_id) if source_id is not None else None),
+           int(source_id) if source_id is not None else None, repeat),
       )
       self._db.commit()
     except sqlite3.Error as exc:
@@ -175,6 +197,7 @@ class TimerService:
         persistent=True,
         source=str(source or ""),
         source_id=int(source_id) if source_id is not None else None,
+        repeat=repeat,
     )
     with self._lock:
       self._timers[("reminder", entry.id)] = entry
@@ -268,7 +291,8 @@ class TimerService:
       for key, entry in list(self._timers.items()):
         if entry.due_at <= now:
           due.append(entry)
-          self._timers.pop(key, None)
+          if entry.repeat != "daily":
+            self._timers.pop(key, None)
     for entry in due:
       if entry.kind == "reminder":
         messages.append(
@@ -276,9 +300,16 @@ class TimerService:
         )
         if self._db is not None:
           try:
-            self._db.execute(
-                "UPDATE reminders SET fired = 1 WHERE id = ?", (entry.id,)
-            )
+            if entry.repeat == "daily":
+              entry.due_at = self._next_daily(entry.due_at, now)
+              self._db.execute(
+                  "UPDATE reminders SET due_at = ? WHERE id = ?",
+                  (entry.due_at.isoformat(timespec="seconds"), entry.id),
+              )
+            else:
+              self._db.execute(
+                  "UPDATE reminders SET fired = 1 WHERE id = ?", (entry.id,)
+              )
             self._db.commit()
           except sqlite3.Error as exc:
             log.warning("Could not mark reminder %s fired: %s", entry.id, exc)
@@ -286,13 +317,27 @@ class TimerService:
         messages.append(f"Timer finished: {entry.label}.")
       else:
         messages.append("Your timer is finished, sir.")
+      if entry.on_done is not None:
+        try:
+          entry.on_done(entry)
+        except Exception:  # a phase callback must never stop the scheduler
+          log.warning("Timer callback failed", exc_info=True)
     return messages
 
   @staticmethod
   def _notification_text(source, label):
     if source == "todo":
       return f"To-do: {label}."
+    if source == "habit":
+      return f"Habit: {label}."
     return f"Reminder: {label}."
+
+  @staticmethod
+  def _next_daily(due, now):
+    candidate = datetime.combine(now.date(), due.time())
+    if candidate <= now:
+      candidate += timedelta(days=1)
+    return candidate
 
   def _loop(self):
     while not self._stop.is_set():

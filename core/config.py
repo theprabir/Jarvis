@@ -173,6 +173,129 @@ class ProductivityConfig:
 
 
 @dataclass(frozen=True)
+class NotesConfig:
+  enabled: bool = True
+  # Notes share the assistant database but use their own tables.
+  db: str = "data/jarvis.db"
+  max_items: int = 5000
+  max_content_chars: int = 10_000
+  search_limit: int = 10
+
+  @property
+  def resolved_db(self) -> Path:
+    path = Path(self.db)
+    return path if path.is_absolute() else (PROJECT_ROOT / path).resolve()
+
+
+@dataclass(frozen=True)
+class HabitsConfig:
+  enabled: bool = True
+  # Habits share the assistant database but use their own tables.
+  db: str = "data/jarvis.db"
+  max_habits: int = 200
+
+  @property
+  def resolved_db(self) -> Path:
+    path = Path(self.db)
+    return path if path.is_absolute() else (PROJECT_ROOT / path).resolve()
+
+
+@dataclass(frozen=True)
+class GoalsConfig:
+  enabled: bool = True
+  # Goals share the assistant database but use their own table.
+  db: str = "data/jarvis.db"
+  max_goals: int = 500
+
+  @property
+  def resolved_db(self) -> Path:
+    path = Path(self.db)
+    return path if path.is_absolute() else (PROJECT_ROOT / path).resolve()
+
+
+@dataclass(frozen=True)
+class TimeConfig:
+  enabled: bool = True
+  # Time entries share the assistant database but use their own table.
+  db: str = "data/jarvis.db"
+  max_entries: int = 20_000
+
+  @property
+  def resolved_db(self) -> Path:
+    path = Path(self.db)
+    return path if path.is_absolute() else (PROJECT_ROOT / path).resolve()
+
+
+@dataclass(frozen=True)
+class CalendarConfig:
+  enabled: bool = True
+  # Calendar events share the assistant database but use their own table.
+  db: str = "data/jarvis.db"
+  max_events: int = 5000
+  default_duration_minutes: int = 60
+
+  @property
+  def resolved_db(self) -> Path:
+    path = Path(self.db)
+    return path if path.is_absolute() else (PROJECT_ROOT / path).resolve()
+
+
+@dataclass(frozen=True)
+class EmailConfig:
+  enabled: bool = True
+  # Drafts share the assistant database but use their own table.
+  db: str = "data/jarvis.db"
+  max_drafts: int = 1000
+  # Local drafting needs no account. Remote search and sending stay disabled
+  # until both a server and username are supplied. The password is read from
+  # the named environment variable, never from this file.
+  from_address: str = ""
+  username: str = ""
+  password_env: str = "JARVIS_EMAIL_PASSWORD"
+  imap_host: str = ""
+  imap_port: int = 993
+  imap_ssl: bool = True
+  smtp_host: str = ""
+  smtp_port: int = 587
+  smtp_ssl: bool = False
+  smtp_starttls: bool = True
+  mailbox: str = "INBOX"
+  search_limit: int = 10
+  timeout_s: float = 20.0
+  max_body_chars: int = 20_000
+
+  @property
+  def resolved_db(self) -> Path:
+    path = Path(self.db)
+    return path if path.is_absolute() else (PROJECT_ROOT / path).resolve()
+
+
+@dataclass(frozen=True)
+class PomodoroConfig:
+  enabled: bool = True
+  work_minutes: int = 25
+  break_minutes: int = 5
+  long_break_minutes: int = 15
+  cycles_before_long_break: int = 4
+
+
+@dataclass(frozen=True)
+class ClipboardConfig:
+  enabled: bool = True
+  # Clipboard entries share the assistant database but use their own table.
+  db: str = "data/jarvis.db"
+  max_items: int = 500
+  max_chars: int = 10_000
+  retention_days: int = 30
+  search_limit: int = 10
+
+  @property
+  def resolved_db(self) -> Path:
+    path = Path(self.db)
+    return path if path.is_absolute() else (PROJECT_ROOT / path).resolve()
+
+
+@dataclass(frozen=True)
 class DocumentsConfig:
   enabled: bool = True
   # Document metadata and chunk index share the assistant database.
@@ -267,6 +390,14 @@ class Settings:
   tools: ToolsConfig
   tasks: TasksConfig
   productivity: ProductivityConfig
+  notes: NotesConfig
+  habits: HabitsConfig
+  goals: GoalsConfig
+  time: TimeConfig
+  calendar: CalendarConfig
+  email: EmailConfig
+  pomodoro: PomodoroConfig
+  clipboard: ClipboardConfig
   documents: DocumentsConfig
   memory: MemoryConfig
   weather: WeatherConfig
@@ -415,6 +546,139 @@ def _validate(settings):
   _require(
       isinstance(productivity.enabled, bool),
       "[productivity] enabled must be true or false",
+  )
+
+  notes = settings.notes
+  _require(bool(notes.db), "[notes] db must not be empty")
+  _require(1 <= notes.max_items <= 50_000, "[notes] max_items must be 1-50000")
+  _require(
+      100 <= notes.max_content_chars <= 100_000,
+      "[notes] max_content_chars must be 100-100000",
+  )
+  _require(
+      1 <= notes.search_limit <= 50,
+      "[notes] search_limit must be 1-50",
+  )
+  _require(isinstance(notes.enabled, bool), "[notes] enabled must be true or false")
+
+  habits = settings.habits
+  _require(bool(habits.db), "[habits] db must not be empty")
+  _require(
+      1 <= habits.max_habits <= 2000,
+      "[habits] max_habits must be 1-2000",
+  )
+  _require(isinstance(habits.enabled, bool), "[habits] enabled must be true or false")
+
+  goals = settings.goals
+  _require(bool(goals.db), "[goals] db must not be empty")
+  _require(
+      1 <= goals.max_goals <= 5000,
+      "[goals] max_goals must be 1-5000",
+  )
+  _require(isinstance(goals.enabled, bool), "[goals] enabled must be true or false")
+
+  tracked_time = settings.time
+  _require(bool(tracked_time.db), "[time] db must not be empty")
+  _require(
+      1 <= tracked_time.max_entries <= 100_000,
+      "[time] max_entries must be 1-100000",
+  )
+  _require(
+      isinstance(tracked_time.enabled, bool),
+      "[time] enabled must be true or false",
+  )
+
+  calendar = settings.calendar
+  _require(bool(calendar.db), "[calendar] db must not be empty")
+  _require(
+      1 <= calendar.max_events <= 100_000,
+      "[calendar] max_events must be 1-100000",
+  )
+  _require(
+      1 <= calendar.default_duration_minutes <= 1440,
+      "[calendar] default_duration_minutes must be 1-1440",
+  )
+  _require(
+      isinstance(calendar.enabled, bool),
+      "[calendar] enabled must be true or false",
+  )
+
+  mail = settings.email
+  _require(bool(mail.db), "[email] db must not be empty")
+  _require(1 <= mail.max_drafts <= 10_000, "[email] max_drafts must be 1-10000")
+  _require(bool(mail.password_env), "[email] password_env must not be empty")
+  _require(1 <= mail.imap_port <= 65535, "[email] imap_port must be 1-65535")
+  _require(1 <= mail.smtp_port <= 65535, "[email] smtp_port must be 1-65535")
+  _require(
+      isinstance(mail.imap_ssl, bool),
+      "[email] imap_ssl must be true or false",
+  )
+  _require(
+      isinstance(mail.smtp_ssl, bool),
+      "[email] smtp_ssl must be true or false",
+  )
+  _require(
+      isinstance(mail.smtp_starttls, bool),
+      "[email] smtp_starttls must be true or false",
+  )
+  _require(1 <= mail.search_limit <= 50, "[email] search_limit must be 1-50")
+  _require(2.0 <= mail.timeout_s <= 60.0, "[email] timeout_s must be 2-60")
+  _require(
+      1000 <= mail.max_body_chars <= 100_000,
+      "[email] max_body_chars must be 1000-100000",
+  )
+  _require(
+      isinstance(mail.enabled, bool),
+      "[email] enabled must be true or false",
+  )
+  _require(
+      not mail.from_address or "@" in mail.from_address,
+      "[email] from_address must be an email address",
+  )
+
+  pomodoro = settings.pomodoro
+  _require(
+      1 <= pomodoro.work_minutes <= 180,
+      "[pomodoro] work_minutes must be 1-180",
+  )
+  _require(
+      1 <= pomodoro.break_minutes <= 60,
+      "[pomodoro] break_minutes must be 1-60",
+  )
+  _require(
+      1 <= pomodoro.long_break_minutes <= 120,
+      "[pomodoro] long_break_minutes must be 1-120",
+  )
+  _require(
+      1 <= pomodoro.cycles_before_long_break <= 12,
+      "[pomodoro] cycles_before_long_break must be 1-12",
+  )
+  _require(
+      isinstance(pomodoro.enabled, bool),
+      "[pomodoro] enabled must be true or false",
+  )
+
+  clipboard = settings.clipboard
+  _require(bool(clipboard.db), "[clipboard] db must not be empty")
+  _require(
+      1 <= clipboard.max_items <= 10_000,
+      "[clipboard] max_items must be 1-10000",
+  )
+  _require(
+      100 <= clipboard.max_chars <= 100_000,
+      "[clipboard] max_chars must be 100-100000",
+  )
+  _require(
+      1 <= clipboard.retention_days <= 3650,
+      "[clipboard] retention_days must be 1-3650",
+  )
+  _require(
+      1 <= clipboard.search_limit <= 50,
+      "[clipboard] search_limit must be 1-50",
+  )
+  _require(
+      isinstance(clipboard.enabled, bool),
+      "[clipboard] enabled must be true or false",
   )
 
   documents = settings.documents
@@ -594,6 +858,14 @@ def load_settings(path=None):
           raw.get("productivity", {}),
           "productivity",
       ),
+      notes=_build(NotesConfig, raw.get("notes", {}), "notes"),
+      habits=_build(HabitsConfig, raw.get("habits", {}), "habits"),
+      goals=_build(GoalsConfig, raw.get("goals", {}), "goals"),
+      time=_build(TimeConfig, raw.get("time", {}), "time"),
+      calendar=_build(CalendarConfig, raw.get("calendar", {}), "calendar"),
+      email=_build(EmailConfig, raw.get("email", {}), "email"),
+      pomodoro=_build(PomodoroConfig, raw.get("pomodoro", {}), "pomodoro"),
+      clipboard=_build(ClipboardConfig, raw.get("clipboard", {}), "clipboard"),
       documents=_build(
           DocumentsConfig, raw.get("documents", {}), "documents"
       ),

@@ -165,6 +165,84 @@ default_priority = "normal"
 # Upper bound for list and planning queries.
 max_items = 2000
 
+[notes]
+# Local notes with FTS5 search. Notes share the assistant database but use
+# their own tables, separate from to-dos, memories and conversation history.
+enabled = true
+db = "data/jarvis.db"
+# Upper bound for list and fallback scan queries.
+max_items = 5000
+max_content_chars = 10000
+search_limit = 10
+
+[habits]
+# Daily habits with check-in streaks and optional recurring reminders.
+# Habits share the assistant database but use their own tables.
+enabled = true
+db = "data/jarvis.db"
+# Upper bound for habit listing and reminder refresh.
+max_habits = 200
+
+[goals]
+# Local goals with numeric progress and optional target dates.
+# Goals share the assistant database but use their own table.
+enabled = true
+db = "data/jarvis.db"
+max_goals = 500
+
+[time]
+# Local time tracking with one active entry and daily totals.
+# Entries share the assistant database but use their own table.
+enabled = true
+db = "data/jarvis.db"
+max_entries = 20000
+
+[calendar]
+# Local calendar events and daily agendas.
+# Events share the assistant database but use their own table.
+enabled = true
+db = "data/jarvis.db"
+max_events = 5000
+default_duration_minutes = 60
+
+[email]
+# Local email drafts always work; searching and sending need an account.
+# The password is read from this environment variable, never this file.
+enabled = true
+db = "data/jarvis.db"
+max_drafts = 1000
+from_address = ""
+username = ""
+password_env = "JARVIS_EMAIL_PASSWORD"
+imap_host = ""
+imap_port = 993
+imap_ssl = true
+smtp_host = ""
+smtp_port = 587
+smtp_ssl = false
+smtp_starttls = true
+mailbox = "INBOX"
+search_limit = 10
+timeout_s = 20.0
+max_body_chars = 20000
+
+[pomodoro]
+# Work and break phases use the existing in-memory timer service.
+enabled = true
+work_minutes = 25
+break_minutes = 5
+long_break_minutes = 15
+cycles_before_long_break = 4
+
+[clipboard]
+# Clipboard copies are stored locally with bounded count, size and age.
+enabled = true
+db = "data/jarvis.db"
+max_items = 500
+max_chars = 10000
+retention_days = 30
+search_limit = 10
+
 [documents]
 # Local document intelligence: PDF, DOCX, TXT, Markdown, CSV and XLSX.
 # Text and tables stay on this machine; only retrieved passages are sent to

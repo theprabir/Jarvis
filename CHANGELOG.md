@@ -7,9 +7,10 @@ all feature sets in a phase increments the middle number and resets the patch.
 feature sets in this level increment the patch (v0.2.1, …), and completing the
 level increments the middle number.
 
-## Unreleased — 4.11 Productivity Management (M1)
+## v0.2.6 — 2026-11-11 — 4.11 Productivity Management (M1-M11)
 
-**Local to-dos, deadlines and recurring tasks**
+**Local to-dos, planning, notes, habits, goals, time tracking, calendar,
+email, Pomodoro, clipboard history and summaries**
 
 ### Implemented functionality
 
@@ -31,37 +32,242 @@ level increments the middle number.
 - **Natural language** — `add a to-do to ...`, `what's on my todo list`,
   `mark todo ID done`, `show todo ID`, `snooze todo ID for N minutes` and
   `remove todo ID` route deterministically without calling the model.
+- **Validated to-do tools** — `todo_add`, `todo_list`, `todo_show`,
+  `todo_update`, `todo_complete`, `todo_snooze` and `todo_delete` expose the
+  same `ProductivityService` to durable plans and model tool calls. They
+  validate arguments, return JSON-safe data, and share the assistant's lazy
+  service instead of opening a second database or scheduler. Delete requires
+  confirmation; the other to-do tools are safe.
+- **Daily and weekly planning** — `/plan` builds a read-only agenda for today
+  or a chosen day from open to-dos, separating overdue, scheduled,
+  unscheduled and upcoming work. `/plan week` covers the next seven days and
+  keeps overdue, unscheduled and later items separate. Natural requests such
+  as `plan my day` and `plan my week` route without the model.
+- **Planning tools** — `plan_day` and `plan_week` expose the same agendas to
+  durable plans and model tool calls with structured JSON-safe items. They
+  are safe, read-only and never create deadlines or change an item.
+- **Local notes** — notes live in their own `notes` table and support add,
+  list, show, edit and delete. `/notes add TITLE | TEXT` sets an explicit
+  title; otherwise the first line is used.
+- **Quick voice notes** — `note that ...`, `take a note ...`, `note: ...`,
+  `quick note ...` and `jot down ...` save immediately without the model.
+  Natural listing, showing, search and deletion are recognized too.
+- **Note search** — SQLite FTS5 over titles and content, with a scored scan
+  fallback when FTS5 is unavailable. Results include a short matching excerpt.
+- **Validated note tools** — `note_add`, `note_list`, `note_show`,
+  `note_search`, `note_update` and `note_delete` expose the same service to
+  durable plans and model tool calls. Delete requires confirmation; the other
+  note tools are safe.
+- **Daily habits** — add, list, show, edit and remove habits in their own
+  `habits` and `habit_checkins` tables. A check-in is stored once per local
+  day, so repeating it is idempotent.
+- **Streak tracking** — current streaks count consecutive days ending today
+  or yesterday when today is not checked in yet; best streaks and total
+  check-ins are tracked separately. `/habit undo ID` removes today's check-in.
+- **Recurring habit reminders** — an optional clock time creates one persisted
+  daily reminder through the existing timer scheduler. It rolls forward after
+  a restart instead of delivering missed occurrences as a flood.
+- **Natural habit language** — `add a habit to read every day at 9pm`,
+  `list my habits`, `show habit 2`, `habit 2 done`, `undo habit 2` and
+  `remove habit 2` route without the model; natural deletion asks for
+  confirmation.
+- **Validated habit tools** — `habit_add`, `habit_list`, `habit_show`,
+  `habit_complete`, `habit_undo`, `habit_update` and `habit_delete` expose the
+  same lazy service to durable plans and model tool calls. Delete requires
+  confirmation; the other habit tools are safe.
+- **Local goals** — goals live in their own `goals` table with optional numeric
+  targets, units and target dates. `/goal progress` sets absolute progress and
+  `/goal increment` adds to it.
+- **Goal lifecycle** — goals can be completed, reopened and edited; active
+  goals are listed first, followed by completed goals, and target dates show
+  days remaining or overdue days.
+- **Natural goal language** — `add a goal to read 12 books by December 31`,
+  `list my goals`, `show goal 2`, `goal 2 progress 5`,
+  `add 2 to goal 2`, `complete goal 2` and `remove goal 2` route without the
+  model; natural deletion asks for confirmation.
+- **Validated goal tools** — `goal_add`, `goal_list`, `goal_show`,
+  `goal_progress`, `goal_complete`, `goal_reopen`, `goal_update` and
+  `goal_delete` expose the same lazy service to durable plans and model tool
+  calls. Delete requires confirmation; the other goal tools are safe.
+- **Local time tracking** — start and stop one active entry, inspect elapsed
+  status, list recent entries and remove mistakes. Elapsed time is derived
+  from persisted timestamps, so no second timer thread is started.
+- **Daily and weekly totals** — reports group tracked time by label and split
+  entries that cross midnight between local dates. `/time week` shows a
+  seven-day breakdown and total.
+- **Natural time language** — `start tracking writing`, `stop tracking`,
+  `what am I tracking`, `how much time did I spend today`, `time week`,
+  `list my time entries` and `remove time entry 2` route without the model;
+  natural deletion asks for confirmation.
+- **Local calendar events** — events live in their own `calendar_events`
+  table with a title, optional details, start date and time, and a duration
+  in minutes. Durations default to 60 minutes and are validated to 1–1440.
+- **Daily agenda** — `/calendar today`, `/calendar tomorrow` and
+  `/calendar agenda DATE` list events ordered by start time for the local
+  date. `/calendar list` shows upcoming events.
+- **Natural calendar language** — `add a calendar event for lunch tomorrow at
+  noon`, `what's on my calendar today`, `show calendar event 2` and
+  `remove calendar event 2` route without the model; natural deletion asks for
+  confirmation.
+- **Validated calendar tools** — `calendar_add`, `calendar_agenda`,
+  `calendar_list`, `calendar_show`, `calendar_update` and `calendar_delete`
+  expose the same lazy service to durable plans and model tool calls. Delete
+  requires confirmation; the other calendar tools are safe.
+- **Local email drafts** — drafts live in their own `email_drafts` table with
+  a recipient, optional cc, subject and body, and can be listed, shown, edited
+  and deleted without an account. Header values reject line breaks to prevent
+  header injection.
+- **Optional connected account** — IMAP search, message reading and SMTP
+  sending are enabled only when `[email]` names the servers and username. The
+  password is read from `password_env`, never from the TOML file. Sending and
+  deletion require confirmation.
+- **Email summaries and replies** — fetched messages get a local extractive
+  summary, and `/email reply UID` creates a quoted local draft addressed to the
+  sender. No message content is sent to the model for these actions.
+- **Natural email language** — `draft an email to ... about ...`,
+  `list my email drafts`, `show email draft ID`, `send email draft ID`,
+  `remove email draft ID`, `search my email for ...`, `read email UID`,
+  `summarize email UID` and `reply to email UID` route without the model;
+  send and delete ask for confirmation.
+- **Validated email tools** — `email_draft`, `email_list`, `email_show`,
+  `email_update`, `email_delete`, `email_send`, `email_search`, `email_read`,
+  `email_summarize` and `email_reply` expose the same lazy service to durable
+  plans and model tool calls.
+- **Pomodoro phases** — work, short-break and long-break timers reuse the
+  existing `TimerService`; completion callbacks advance the phase without a
+  second scheduler. `/pomodoro start|status|stop|skip` and natural language
+  route deterministically.
+- **Validated Pomodoro tools** — `pomodoro_start`, `pomodoro_status`,
+  `pomodoro_stop` and `pomodoro_skip` share the same timer-backed service.
+- **Bounded clipboard history** — copies made through `clipboard_copy` are
+  stored in a local table with source and timestamp. Search, show, delete and
+  clear are available through `/clipboard` and natural language; delete and
+  clear require confirmation.
+- **Clipboard retention** — item count, character size and age limits prune
+  history automatically. The history is local and does not attempt to record
+  clipboard changes made by other applications.
+- **Validated clipboard tools** — `clipboard_list`, `clipboard_search`,
+  `clipboard_show`, `clipboard_delete` and `clipboard_clear` expose the same
+  bounded store; existing `clipboard_copy` records through it.
+- **Daily summaries** — `/summary` combines open to-dos, calendar events,
+  tracked time and habit check-ins for the requested local day. The summary is
+  read-only and deterministic.
+- **Meeting summaries** — `/summary meeting TITLE | NOTES` and natural language
+  produce an extractive summary of supplied notes without a model or network
+  call. `summary_daily` and `summary_meeting` expose both actions as tools.
+- **Validated time tools** — `time_start`, `time_stop`, `time_status`,
+  `time_report`, `time_week`, `time_list` and `time_delete` expose the same
+  lazy service to durable plans and model tool calls. Delete requires
+  confirmation; the other time tools are safe.
+- **Expanded deterministic dates** — to-do parsing now understands
+  time-of-day words, bare afternoon clock hours, `next week/month`,
+  `this weekend`, `end of day/week/month`, month names, month/day forms,
+  `the 20th`, word-number relative dates and implicit durations such as
+  `in two hours`. Past same-day weekday and calendar dates roll to their next
+  real occurrence.
 - **Backward-compatible reminder migration** — existing `reminders` tables
-  gain `source` and `source_id` columns through a guarded `ALTER TABLE`; old
-  reminders keep working.
+  gain `source`, `source_id` and `repeat` columns through guarded
+  `ALTER TABLE` statements; old one-shot reminders keep working.
 
 ### Files
 
-- `core/productivity.py` — SQLite to-do store, recurrence, parsing and
-  reminder scheduling rules.
-- `core/timers.py` — source-aware reminders, legacy schema migration and
-  `cancel_source`, preserving the single scheduler thread.
-- `core/intents.py`, `core/assistant.py` — `/todo` commands, natural intent
-  routing, replies and edit/snooze handling.
-- `core/config.py`, `config/settings.toml` — validated `[productivity]`
-  settings.
-- `tests/test_productivity.py` — 23 offline tests for parsing, CRUD,
-  recurrence, reminders, restart/missed recovery and assistant flows.
-- `README.md` — productivity commands, configuration and current 4.11 status.
+- `core/productivity.py` — SQLite to-do store, recurrence, parsing, reminder
+  scheduling rules, read-only daily/weekly plans and agenda formatting.
+- `core/timers.py` — source-aware reminders, daily repetition, schema
+  migration and `cancel_source`, preserving the single scheduler thread.
+- `core/intents.py`, `core/assistant.py` — `/todo` and `/plan` commands,
+  natural intent routing, replies, planning, edit/snooze handling and the
+  lazy productivity provider passed into the tool registry.
+- `tools/productivity.py`, `tools/__init__.py` — validated to-do tool
+  wrappers, planning tools and conditional registration through a lazy
+  service provider.
+- `core/notes.py`, `tools/notes.py`, `tools/__init__.py` — SQLite note store,
+  FTS5 search with scan fallback, note formatting and validated tools.
+- `core/habits.py`, `tools/habits.py`, `tools/__init__.py` — SQLite habit
+  store, check-in streaks, natural parsing, daily reminders and validated
+  tools.
+- `core/goals.py`, `tools/goals.py`, `tools/__init__.py` — SQLite goal store,
+  numeric progress, target dates, natural parsing and validated tools.
+- `core/time_tracking.py`, `tools/time_tracking.py`, `tools/__init__.py` —
+  SQLite time entries, elapsed time, daily/weekly totals and validated tools.
+- `core/calendar.py`, `tools/calendar.py`, `tools/__init__.py` — SQLite
+  calendar events, daily agendas, natural parsing and validated tools.
+- `core/mail.py`, `tools/mail.py`, `tools/__init__.py` — local email drafts,
+  optional IMAP/SMTP account actions, extractive summaries and validated
+  tools.
+- `core/pomodoro.py`, `tools/pomodoro.py` — timer-backed work/break phases and
+  validated Pomodoro tools.
+- `core/clipboard_history.py`, `tools/clipboard_history.py` — bounded local
+  clipboard history, search and validated tools.
+- `core/summaries.py`, `tools/summaries.py` — deterministic daily and meeting
+  summaries and their tools.
+- `core/config.py`, `config/settings.toml` — validated `[productivity]`,
+  `[notes]`, `[habits]`, `[goals]`, `[time]`, `[calendar]` and `[email]`
+  settings, plus `[pomodoro]` and `[clipboard]` limits.
+- `tests/test_productivity.py` — offline tests for parsing, CRUD, recurrence,
+  reminders, restart/missed recovery, planning, assistant flows and the tool
+  layer.
+- `tests/test_notes.py` — offline tests for note storage, search and fallback,
+  quick-note intents, commands, assistant flows and tools.
+- `tests/test_habits.py` — offline tests for habit parsing, storage, streaks,
+  timer repetition and recovery, intents, commands, assistant flows and tools.
+- `tests/test_goals.py` — offline tests for goal parsing, storage, progress,
+  target dates, intents, commands, assistant flows and tools.
+- `tests/test_time_tracking.py` — offline tests for entries, midnight splits,
+  daily/weekly totals, intents, commands, assistant flows and tools.
+- `tests/test_calendar.py` — offline tests for event parsing, CRUD, daily
+  agendas, limits, intents, commands, assistant flows and tools.
+- `tests/test_email.py` — offline tests for drafts, parsing, optional IMAP and
+  SMTP flows, summaries, replies, commands and tools.
+- `tests/test_remaining_411.py` — Pomodoro phase transitions, clipboard
+  history, summaries, intents, commands and configuration.
+- `README.md` — productivity, planning, note, habit, goal, time, calendar and
+  email commands, configuration and current 4.11 status.
 
 ### Bug fixes
 
 - **Date-only reminders** — a phrase such as `tomorrow` no longer rolls to
   the day after tomorrow when the default 9:00 time has already passed;
   `tonight` now means 20:00 on the current day.
+- **Natural-language deletion confirmation** — `remove todo ID` validates the
+  item, asks for confirmation and deletes through the validated `todo_delete`
+  tool; a direct service fallback remains for tools-disabled sessions.
 
 ### Testing
 
 - `python -m compileall -q core tools config tests main.py` passed.
-- `python -m unittest discover -s tests` passed: **400 tests**.
-- Focused productivity suite: **23 tests, OK**.
+- `python -m unittest discover -s tests` passed: **536 tests**.
+- Focused productivity suite: **44 tests, OK**; focused notes, habits, goals
+  and time suites: **17, 21, 17 and 15 tests, OK**.
+- Focused calendar suite: **16 tests, OK**.
+- Focused email suite: **17 tests, OK**.
+- Focused remaining 4.11 suite: **12 tests, OK**.
 - Measured added RSS for the service and 200 in-memory to-dos in the test
-  process: **~1.0 MB**; no second scheduler thread is created.
+  process: **~1.0 MB**; no second scheduler thread is created. The tool
+  wrappers add no new service, database or background thread.
+- Building both daily and weekly plans over the 2,000-item limit allocated
+  **~3.4 MB peak** in `tracemalloc`; plans hold references to existing
+  `TodoItem` objects and add no database, worker or scheduler.
+- Listing 5,000 notes and running a 10-result FTS5 search allocated **~2.9 MB
+  peak** in `tracemalloc`; note tools reuse the same lazy service and add no
+  worker or scheduler.
+- Listing 200 habits with 18,000 check-ins allocated **~276 KiB peak** in
+  `tracemalloc`; habit reminders reuse the existing timer thread and add no
+  second scheduler.
+- Listing 500 goals allocated **~449 KiB peak** in `tracemalloc`; goal tools
+  use the same lazy service and add no database thread, timer or worker.
+- Listing 20,000 time entries and building a daily report allocated
+  **~11.5 MB peak** in `tracemalloc`; time tracking uses persisted timestamps
+  and starts no timer, worker or background thread.
+- Loading 500 calendar events and building a daily agenda allocated
+  **~341 KiB peak** in `tracemalloc`; calendar access uses one SQLite
+  connection and starts no timer, worker or background thread.
+- Listing 500 email drafts allocated **~402 KiB peak** in `tracemalloc`;
+  local drafts use one SQLite connection, and remote account actions open a
+  connection only for the requested operation.
+- Listing 500 clipboard entries allocated **~218 KiB peak** in `tracemalloc`;
+  clipboard history uses one SQLite connection and prunes synchronously on
+  save, with no background worker or additional thread.
 
 ## v0.2.5 — 2026-11-10
 

@@ -160,6 +160,8 @@ CONVERSATION_INTENTS = frozenset(
         "clipboard_clear",
         "summary_daily",
         "summary_meeting",
+        "developer_explain",
+        "developer_inspect",
         "task_organize",
         "task_plan",
         "task_list",
@@ -219,6 +221,8 @@ COMMANDS = frozenset(
         "clipboard",
         "summary",
         "summaries",
+        "dev",
+        "developer",
         "todo",
         "todos",
         "documents",
@@ -730,6 +734,17 @@ _SUMMARY_MEETING = re.compile(
     r"(?P<body>.+)$",
     re.I,
 )
+_DEVELOPER_EXPLAIN = re.compile(
+    r"^(?:explain|describe|summari[sz]e)\s+(?:the\s+)?"
+    r"(?:source(?:\s+code)?|code|file)\s+(?P<path>.+)$",
+    re.I,
+)
+_DEVELOPER_INSPECT = re.compile(
+    r"^(?:inspect|survey|show|list)\s+(?:the\s+)?"
+    r"(?:project|repository|repo)(?:\s+(?:directory|structure|tree))?"
+    r"(?:\s+(?P<path>.+))?$",
+    re.I,
+)
 
 
 def recognize_utilities(text):
@@ -1223,6 +1238,24 @@ def recognize_summaries(text):
     body = _clean(match.group("body"))
     if len(body) >= 2:
       return Intent("summary_meeting", 0.9, {"text": body})
+  return None
+
+
+def recognize_developer(text):
+  """Recognize read-only source explanation and project inspection."""
+  source = (text or "").strip().rstrip("?.!")
+  if not source:
+    return None
+  match = _DEVELOPER_EXPLAIN.match(source)
+  if match:
+    path = _clean(match.group("path"))
+    if path:
+      return Intent("developer_explain", 0.9, {"path": path})
+  match = _DEVELOPER_INSPECT.match(source)
+  if match:
+    return Intent(
+        "developer_inspect", 0.9, {"path": _clean(match.group("path") or "")}
+    )
   return None
 
 
@@ -2295,6 +2328,9 @@ class IntentRouter:
     if intent is not None:
       return intent
     intent = recognize_summaries(text)
+    if intent is not None:
+      return intent
+    intent = recognize_developer(text)
     if intent is not None:
       return intent
     intent = recognize_pomodoro(text)

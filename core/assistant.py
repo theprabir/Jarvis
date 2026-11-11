@@ -85,6 +85,7 @@ from core.clipboard_history import (
     ClipboardHistoryService,
     format_entry as format_clipboard_entry,
 )
+from core.developer import DeveloperError, DeveloperService
 from core.pomodoro import PomodoroError, PomodoroService
 from core.summaries import SummaryError, SummaryService
 from core.mail import (
@@ -255,8 +256,9 @@ HELP_TEXT = (
     " start, stop and daily totals, and /calendar manages events and daily"
     " agendas, and /email drafts local messages and uses an explicitly"
     " configured account for search, reading and sending, /pomodoro runs work"
-    " and break phases, /clipboard searches bounded copy history, and /summary"
-    " builds daily or meeting summaries. /help lists this."
+    " and break phases, /clipboard searches bounded copy history, /summary"
+    " builds daily or meeting summaries, and /dev explains source files and"
+    " inspects projects. /help lists this."
 )
 
 DOCUMENTS_HELP = (
@@ -276,6 +278,7 @@ CALENDAR_DISABLED = "Calendar is disabled, sir."
 EMAIL_DISABLED = "Email is disabled, sir."
 POMODORO_DISABLED = "Pomodoro is disabled, sir."
 CLIPBOARD_DISABLED = "Clipboard history is disabled, sir."
+DEVELOPER_DISABLED = "Developer tools are disabled, sir."
 
 TODO_HELP = (
     "To-do commands: list, all, add TEXT [due WHEN] [priority LEVEL]"
@@ -329,6 +332,10 @@ CLIPBOARD_HELP = (
 
 SUMMARY_HELP = (
     "Summary commands: daily [DATE], meeting TITLE | NOTES."
+)
+
+DEVELOPER_HELP = (
+    "Developer commands: explain PATH, inspect [PATH]."
 )
 
 def _normalize_sentence(text):
@@ -429,6 +436,7 @@ class Assistant:
     self._pomodoro = None
     self._clipboard_history = None
     self._summaries = None
+    self._developer = None
     self._notifier = None
     self._documents = None
     self._last_document = ""
@@ -451,6 +459,7 @@ class Assistant:
             self._get_pomodoro,
             self._get_clipboard_history,
             self._get_summaries,
+            self._get_developer,
         )
         if settings.tools.enabled
         else None
@@ -841,6 +850,16 @@ class Assistant:
           self._get_habits,
       )
     return self._summaries
+
+  def _get_developer(self):
+    """Build the read-only developer assistant lazily."""
+    if not self._settings.developer.enabled:
+      return None
+    if self._developer is None:
+      self._developer = DeveloperService(
+          self._settings.developer, self._settings.tools
+      )
+    return self._developer
 
   # -- web search -------------------------------------------------------
 
@@ -1485,6 +1504,8 @@ class Assistant:
       return self._answer_clipboard_history(intent, user_text or "")
     if intent.name.startswith("summary_"):
       return self._answer_summaries(intent)
+    if intent.name.startswith("developer_"):
+      return self._answer_developer(intent)
     if intent.name.startswith("goal_"):
       return self._answer_goals(intent, user_text or "")
     if intent.name.startswith("habit_"):
@@ -1655,10 +1676,13 @@ class Assistant:
           f"Skipped to Pomodoro {status.phase_label} with"
           f" {minutes}m {seconds}s remaining, sir."
       )
-    return (
+    text = (
         f"Pomodoro {status.phase_label}: {minutes}m {seconds}s remaining;"
         f" {status.completed_work} work phase(s) completed, sir."
     )
+    if status.recovered and status.recovery_details:
+      text += " " + status.recovery_details
+    return text
 
   def _answer_clipboard_history(self, intent, user_text=""):
     service = self._get_clipboard_history()
@@ -1785,6 +1809,40 @@ class Assistant:
     if action in {"tomorrow", "yesterday"} and not rest:
       return service.daily(action)
     return service.daily(rest or action)
+
+  def _answer_developer(self, intent):
+    service = self._get_developer()
+    if service is None:
+      return DEVELOPER_DISABLED
+    try:
+      if intent.name == "developer_explain":
+        return service.explain_source(intent.entities.get("path", ""))[0]
+      return service.inspect_project(intent.entities.get("path", "") or ".")[0]
+    except DeveloperError as exc:
+      return f"I couldn't explain that source, sir: {exc}."
+
+  def _developer_command(self, text):
+    service = self._get_developer()
+    if service is None:
+      return DEVELOPER_DISABLED
+    parts = text.split(maxsplit=1)
+    body = parts[1].strip() if len(parts) > 1 else ""
+    action, _separator, rest = body.partition(" ")
+    action = action.lower() or "help"
+    rest = rest.strip()
+    if action in {"explain", "describe", "source"}:
+      if not rest:
+        return "Usage: /dev explain PATH"
+      try:
+        return service.explain_source(rest)[0]
+      except DeveloperError as exc:
+        return f"I couldn't explain that source, sir: {exc}."
+    if action in {"inspect", "project", "tree"}:
+      try:
+        return service.inspect_project(rest or ".")[0]
+      except DeveloperError as exc:
+        return f"I couldn't inspect that project, sir: {exc}."
+    return DEVELOPER_HELP
 
   def _pomodoro_command(self, text):
     service = self._get_pomodoro()
@@ -4139,6 +4197,8 @@ class Assistant:
       return self._clipboard_command(text)
     if command in {"/summary", "/summaries"}:
       return self._summary_command(text)
+    if command in {"/dev", "/developer"}:
+      return self._developer_command(text)
     if command == "/plan":
       return self._plan_command(text)
     if command in {"/todo", "/todos"}:

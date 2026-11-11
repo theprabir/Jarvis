@@ -8,6 +8,7 @@ from tools import (
     clipboard,
     clipboard_history,
     desktop,
+    developer,
     documents,
     files,
     goals,
@@ -53,6 +54,7 @@ def build_registry(
     pomodoro_service=None,
     clipboard_service=None,
     summary_service=None,
+    developer_service=None,
 ):
   """Build the registry for the current configuration."""
   config = settings.tools
@@ -959,6 +961,22 @@ def build_registry(
         lambda text: summaries.meeting_summary(summary_service, text),
         {"text": str},
         required=("text",),
+    )
+
+  # Read-only developer assistant tools.
+  if developer_service is not None and settings.developer.enabled:
+    add(
+        "developer_explain",
+        "Explain classes, functions and imports in a source file",
+        lambda path: developer.explain_source(developer_service, path),
+        {"path": str},
+        required=("path",),
+    )
+    add(
+        "developer_inspect",
+        "Inspect a project's files, tests and structure",
+        lambda path=".": developer.inspect_project(developer_service, path),
+        {"path": str},
     )
 
   return registry

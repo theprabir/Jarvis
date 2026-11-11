@@ -7,8 +7,9 @@ deterministic Python modules do the audio, routing and tool work.
 
 **Current status:** Phase 1 (stabilization) and feature sets **4.1 Voice
 Interface** through **4.11 Productivity Management** complete, plus optional
-document OCR with confidence warnings, released as **v0.2.7** in the
-moderate-advanced feature line.
+document OCR with confidence warnings, released as **v0.2.8** in the
+moderate-advanced feature line. Phase 4.12 is in progress with read-only
+source explanation and project inspection.
 JARVIS listens through the
 microphone with push-to-talk, transcribes offline with Vosk, keeps multi-turn
 context across restarts, remembers explicitly saved preferences, facts, paths
@@ -88,6 +89,7 @@ All runtime settings live in `config/settings.toml`:
 | `[email]` | Draft database, account servers, username, password env var and mail limits |
 | `[pomodoro]` | State database, work, break and long-break durations and cycle count |
 | `[clipboard]` | Clipboard history database, size, age and search limits |
+| `[developer]` | Read-only source/project scan limits |
 | `[documents]` | Document database, limits, chunking, retrieval, folder indexing and optional OCR |
 | `[web]` | Search provider, result and query limits, page extraction, evidence budget, cache |
 | `[memory]` | Enable memory, its SQLite file, automatic learning, retention and how many memories reach the prompt |
@@ -592,6 +594,7 @@ work_minutes = 25
 break_minutes = 5
 long_break_minutes = 15
 cycles_before_long_break = 4
+end_after_cycles = 0
 
 [clipboard]
 enabled = true
@@ -600,6 +603,30 @@ max_items = 500
 max_chars = 10000
 retention_days = 30
 search_limit = 10
+```
+
+### Developer assistant
+
+The first 4.12 slice is read-only. `/dev explain PATH` parses Python with the
+standard `ast` module and reports the module docstring, imports, top-level
+functions and classes with their methods. Other text files get a bounded
+language/line overview. `/dev inspect [PATH]` counts files, directories,
+Python modules, test files, file types and important project files. Both
+operations stay inside `[tools] root`; they do not execute project code or
+modify files.
+
+| Capability | Behaviour |
+| --- | --- |
+| Explain | `/dev explain PATH`, `explain source PATH` |
+| Inspect | `/dev inspect [PATH]`, `inspect project [PATH]` |
+| Tools | `developer_explain`, `developer_inspect` |
+
+```toml
+[developer]
+enabled = true
+max_files = 500
+max_depth = 4
+max_read_bytes = 200000
 ```
 
 ### Document intelligence
@@ -954,6 +981,8 @@ core/clipboard_history.py Bounded clipboard entries and search
 tools/clipboard_history.py Clipboard-history tool handlers
 core/summaries.py       Daily and meeting summary composition
 tools/summaries.py      Summary tool handlers
+core/developer.py       Source parsing and bounded project inspection
+tools/developer.py      Developer tool handlers
 core/documents.py       Extraction, OCR, chunking, FTS5 index, retrieval and generation
 tools/documents.py      Document tool handlers for the validated registry
 core/utilities.py       Unit conversion, text, size, duration and reminder parsing
@@ -1030,6 +1059,9 @@ logs/                   Runtime logs (git-ignored)
 - Daily summaries read the local services and do not create or change data.
   Meeting summaries are extractive and do not understand speaker turns,
   decisions or action items beyond the supplied text.
+- Developer inspection is read-only and currently covers source explanation
+  and project structure only. It does not execute code, run tests, edit files
+  or provide Git history yet.
 - OCR is optional and uses the built-in Windows OCR engine, so it needs
   Windows and the matching OCR language pack. It reads scanned PDF pages up to
   `ocr_max_pages` and image files; low-resolution, rotated or unusual-font

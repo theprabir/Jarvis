@@ -235,6 +235,9 @@ work_minutes = 25
 break_minutes = 5
 long_break_minutes = 15
 cycles_before_long_break = 4
+# 0 = keep cycling until stopped; N = stop after N completed work phases
+# (the final break still runs before the session ends).
+end_after_cycles = 0
 
 [clipboard]
 # Clipboard copies are stored locally with bounded count, size and age.
@@ -244,6 +247,14 @@ max_items = 500
 max_chars = 10000
 retention_days = 30
 search_limit = 10
+
+[developer]
+# Read-only source explanation and bounded project inspection.
+# Paths stay inside [tools] root.
+enabled = true
+max_files = 500
+max_depth = 4
+max_read_bytes = 200000
 
 [documents]
 # Local document intelligence: PDF, DOCX, TXT, Markdown, CSV and XLSX.

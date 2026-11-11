@@ -7,6 +7,48 @@ all feature sets in a phase increments the middle number and resets the patch.
 feature sets in this level increment the patch (v0.2.1, …), and completing the
 level increments the middle number.
 
+## v0.2.8 — 2026-11-11
+
+**Pomodoro end-of-session, recovery visibility and 4.12 Developer Assistant start**
+
+### Implemented functionality
+
+- **Configurable end** — `[pomodoro] end_after_cycles = N` ends the session
+  after N completed work phases and their final break; `0` keeps cycling.
+- **Recovery details** — `/pomodoro status` shows the saved phase, remaining
+  time and saved due time after a restart, while the timer continues from the
+  remaining duration.
+- **Source explanation** — `/dev explain PATH`, natural `explain source PATH`
+  and the `developer_explain` tool parse Python with `ast` and report the
+  module docstring, imports, top-level functions, classes and methods.
+- **Project inspection** — `/dev inspect [PATH]`, natural `inspect project`
+  and the `developer_inspect` tool report bounded file/directory counts,
+  Python modules, test files, file types, top-level entries and important
+  configuration files.
+- **Sandboxed and read-only** — both operations resolve paths inside
+  `[tools] root`, enforce file/depth limits and never execute or modify code.
+
+### Files
+
+- `core/pomodoro.py` — bounded-session completion and recovery metadata.
+- `core/developer.py` — source AST summaries and bounded project walker.
+- `tools/developer.py` — validated developer tools.
+- `core/assistant.py`, `core/intents.py`, `tools/__init__.py` — Pomodoro
+  recovery replies, `/dev` commands, natural routing and tool registration.
+- `core/config.py`, `config/settings.toml` — `end_after_cycles` validation.
+- `tests/test_remaining_411.py` — end-of-session and recovery assertions.
+- `tests/test_developer.py` — source, project, sandbox, intent, tool and
+  assistant coverage.
+- `README.md`, `CHANGELOG.md` — behavior and version.
+
+### Testing
+
+- Focused remaining 4.11 suite: **14 tests, OK**.
+- Focused developer suite: **5 tests, OK**.
+- Full suite: **543 tests, OK** (the count includes the 4.12 D1 suite).
+- `python -m compileall -q core tools config tests main.py` passed.
+- `git diff --check` passed.
+
 ## v0.2.7 — 2026-11-11
 
 **Pomodoro session persistence**

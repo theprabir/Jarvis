@@ -76,9 +76,27 @@ class PomodoroTests(unittest.TestCase):
         self.addCleanup(resumed.close)
         status = resumed.status()
         self.assertTrue(status.running)
+        self.assertTrue(status.recovered)
+        self.assertIn("Resumed from saved state", status.recovery_details)
         self.assertEqual(status.phase, "work")
         self.assertGreater(status.remaining_s, 0)
         self.assertLessEqual(status.remaining_s, original.remaining_s)
+
+    def test_end_after_completed_cycle(self):
+        config = PomodoroConfig(
+            db=str(Path(self.tmp.name) / "bounded.db"),
+            work_minutes=25,
+            break_minutes=5,
+            end_after_cycles=1,
+        )
+        service = PomodoroService(self.timers, config)
+        self.addCleanup(service.close)
+        service.start()
+        self.timers.poll(datetime.now() + timedelta(minutes=26))
+        self.assertEqual(service.status().phase, "break")
+        self.timers.poll(datetime.now() + timedelta(minutes=32))
+        self.assertFalse(service.status().running)
+        self.assertEqual(self.timers.list(), [])
 
     def test_intents_and_commands(self):
         router = IntentRouter()

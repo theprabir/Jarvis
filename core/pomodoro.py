@@ -40,6 +40,8 @@ class PomodoroStatus:
     remaining_s: int
     completed_work: int
     work_minutes: int
+    recovered: bool = False
+    recovery_details: str = ""
 
     @property
     def phase_label(self):
@@ -131,6 +133,8 @@ class PomodoroService:
         self._timer_id = None
         self._completed = 0
         self._work_minutes = config.work_minutes
+        self._recovered = False
+        self._recovery_details = ""
         self._store = PomodoroStore(config.resolved_db)
         self._restore()
 
@@ -142,6 +146,8 @@ class PomodoroService:
             raise PomodoroError("work minutes must be between 1 and 180")
         self._work_minutes = minutes
         self._completed = 0
+        self._recovered = False
+        self._recovery_details = ""
         self._schedule("work")
         return self.status()
 
@@ -152,6 +158,8 @@ class PomodoroService:
         self._running = False
         self._phase = ""
         self._timer_id = None
+        self._recovered = False
+        self._recovery_details = ""
         self._store.clear()
         return status
 
@@ -178,6 +186,8 @@ class PomodoroService:
             entry.remaining_s,
             self._completed,
             self._work_minutes,
+            self._recovered,
+            self._recovery_details,
         )
 
     def close(self):
@@ -201,8 +211,18 @@ class PomodoroService:
         self._completed = max(0, completed)
         self._work_minutes = work_minutes
         now = datetime.now()
+        saved_remaining = max(0, int((due_at - now).total_seconds()))
+        self._recovered = True
+        self._recovery_details = (
+            f"Resumed from saved state: {phase.replace('_', ' ')} with"
+            f" {saved_remaining // 60}m {saved_remaining % 60}s remaining"
+            f" (saved due {due_at.strftime('%Y-%m-%d %H:%M')})."
+        )
         loops = 0
         while due_at <= now and loops < 1000:
+            if self._session_limit_reached(completed):
+                self._finish()
+                return
             phase, due_at, completed = self._next(phase, due_at, completed)
             loops += 1
         if due_at <= now:
@@ -246,6 +266,9 @@ class PomodoroService:
     def _advance(self, phase):
         if not self._running or self._phase != phase:
             return
+        if self._session_limit_reached(self._completed):
+            self._finish()
+            return
         next_phase, due_at, completed = self._next(
             phase,
             datetime.now(),
@@ -253,6 +276,19 @@ class PomodoroService:
         )
         self._completed = completed
         self._schedule(next_phase, due_at=due_at)
+
+    def _session_limit_reached(self, completed):
+        limit = int(self._config.end_after_cycles)
+        return limit > 0 and completed >= limit
+
+    def _finish(self):
+        """End a bounded session after its final break completes."""
+        self._running = False
+        self._phase = ""
+        self._timer_id = None
+        self._recovered = False
+        self._recovery_details = ""
+        self._store.clear()
 
     def _next(self, phase, due_at, completed):
         if phase == "work":

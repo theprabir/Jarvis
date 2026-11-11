@@ -279,6 +279,9 @@ class PomodoroConfig:
   break_minutes: int = 5
   long_break_minutes: int = 15
   cycles_before_long_break: int = 4
+  # 0 means keep cycling until stopped; otherwise stop after this many work
+  # phases have completed (the final break still runs first).
+  end_after_cycles: int = 0
 
   @property
   def resolved_db(self) -> Path:
@@ -300,6 +303,14 @@ class ClipboardConfig:
   def resolved_db(self) -> Path:
     path = Path(self.db)
     return path if path.is_absolute() else (PROJECT_ROOT / path).resolve()
+
+
+@dataclass(frozen=True)
+class DeveloperConfig:
+  enabled: bool = True
+  max_files: int = 500
+  max_depth: int = 4
+  max_read_bytes: int = 200_000
 
 
 @dataclass(frozen=True)
@@ -405,6 +416,7 @@ class Settings:
   email: EmailConfig
   pomodoro: PomodoroConfig
   clipboard: ClipboardConfig
+  developer: DeveloperConfig
   documents: DocumentsConfig
   memory: MemoryConfig
   weather: WeatherConfig
@@ -662,6 +674,10 @@ def _validate(settings):
       "[pomodoro] cycles_before_long_break must be 1-12",
   )
   _require(
+      0 <= pomodoro.end_after_cycles <= 100,
+      "[pomodoro] end_after_cycles must be 0-100",
+  )
+  _require(
       isinstance(pomodoro.enabled, bool),
       "[pomodoro] enabled must be true or false",
   )
@@ -687,6 +703,24 @@ def _validate(settings):
   _require(
       isinstance(clipboard.enabled, bool),
       "[clipboard] enabled must be true or false",
+  )
+
+  developer = settings.developer
+  _require(
+      1 <= developer.max_files <= 5000,
+      "[developer] max_files must be 1-5000",
+  )
+  _require(
+      1 <= developer.max_depth <= 10,
+      "[developer] max_depth must be 1-10",
+  )
+  _require(
+      1000 <= developer.max_read_bytes <= 5_000_000,
+      "[developer] max_read_bytes must be 1000-5000000",
+  )
+  _require(
+      isinstance(developer.enabled, bool),
+      "[developer] enabled must be true or false",
   )
 
   documents = settings.documents
@@ -874,6 +908,7 @@ def load_settings(path=None):
       email=_build(EmailConfig, raw.get("email", {}), "email"),
       pomodoro=_build(PomodoroConfig, raw.get("pomodoro", {}), "pomodoro"),
       clipboard=_build(ClipboardConfig, raw.get("clipboard", {}), "clipboard"),
+      developer=_build(DeveloperConfig, raw.get("developer", {}), "developer"),
       documents=_build(
           DocumentsConfig, raw.get("documents", {}), "documents"
       ),

@@ -229,6 +229,8 @@ max_body_chars = 20000
 [pomodoro]
 # Work and break phases use the existing in-memory timer service.
 enabled = true
+# The active phase and due time are persisted here for restart recovery.
+db = "data/jarvis.db"
 work_minutes = 25
 break_minutes = 5
 long_break_minutes = 15

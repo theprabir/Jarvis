@@ -273,10 +273,17 @@ class EmailConfig:
 @dataclass(frozen=True)
 class PomodoroConfig:
   enabled: bool = True
+  # The single active-phase row shares the assistant database.
+  db: str = "data/jarvis.db"
   work_minutes: int = 25
   break_minutes: int = 5
   long_break_minutes: int = 15
   cycles_before_long_break: int = 4
+
+  @property
+  def resolved_db(self) -> Path:
+    path = Path(self.db)
+    return path if path.is_absolute() else (PROJECT_ROOT / path).resolve()
 
 
 @dataclass(frozen=True)
@@ -637,6 +644,7 @@ def _validate(settings):
   )
 
   pomodoro = settings.pomodoro
+  _require(bool(pomodoro.db), "[pomodoro] db must not be empty")
   _require(
       1 <= pomodoro.work_minutes <= 180,
       "[pomodoro] work_minutes must be 1-180",

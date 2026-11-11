@@ -810,7 +810,11 @@ class Assistant:
       timers = self._get_timers()
       if timers is None:
         return None
-      self._pomodoro = PomodoroService(timers, self._settings.pomodoro)
+      try:
+        self._pomodoro = PomodoroService(timers, self._settings.pomodoro)
+      except PomodoroError as exc:
+        log.error("Pomodoro unavailable: %s", exc)
+        return None
     return self._pomodoro
 
   def _get_clipboard_history(self):

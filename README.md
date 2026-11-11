@@ -7,7 +7,7 @@ deterministic Python modules do the audio, routing and tool work.
 
 **Current status:** Phase 1 (stabilization) and feature sets **4.1 Voice
 Interface** through **4.11 Productivity Management** complete, plus optional
-document OCR with confidence warnings, released as **v0.2.6** in the
+document OCR with confidence warnings, released as **v0.2.7** in the
 moderate-advanced feature line.
 JARVIS listens through the
 microphone with push-to-talk, transcribes offline with Vosk, keeps multi-turn
@@ -86,7 +86,7 @@ All runtime settings live in `config/settings.toml`:
 | `[time]` | Time-entry database and time-entry limit |
 | `[calendar]` | Calendar database, event limit and default event duration |
 | `[email]` | Draft database, account servers, username, password env var and mail limits |
-| `[pomodoro]` | Work, break and long-break durations and cycle count |
+| `[pomodoro]` | State database, work, break and long-break durations and cycle count |
 | `[clipboard]` | Clipboard history database, size, age and search limits |
 | `[documents]` | Document database, limits, chunking, retrieval, folder indexing and optional OCR |
 | `[web]` | Search provider, result and query limits, page extraction, evidence budget, cache |
@@ -550,7 +550,9 @@ set JARVIS_EMAIL_PASSWORD=...
 
 Pomodoro phases reuse the existing timer scheduler: no second thread or
 service is created. A work phase is followed by a break, and every configured
-cycle ends with a longer break. The session runs until it is stopped.
+cycle ends with a longer break. The active phase, due time and completed work
+count are persisted in SQLite, so a session resumes with its remaining time
+after JARVIS restarts. Elapsed phases are advanced instead of being replayed.
 
 | Capability | Behaviour |
 | --- | --- |
@@ -585,6 +587,7 @@ neither action calls the model or network.
 ```toml
 [pomodoro]
 enabled = true
+db = "data/jarvis.db"
 work_minutes = 25
 break_minutes = 5
 long_break_minutes = 15
@@ -1018,9 +1021,9 @@ logs/                   Runtime logs (git-ignored)
   autocomplete, attachment handling, rich HTML composition, folder management
   or background mail sync. Summaries are extractive and use only the fetched
   message body.
-- Pomodoro state is in memory for the current session and uses the existing
-  timer scheduler. It does not survive a restart, and custom work/break
-  patterns beyond the configured durations are not supported.
+- Pomodoro state is persisted in the assistant SQLite database and resumed on
+  restart. A long absence advances elapsed phases; custom work/break patterns
+  beyond the configured durations are not supported.
 - Clipboard history records copies made through JARVIS, not changes made in
   other applications. It has no encryption at rest and no automatic secret
   detection; retention limits reduce but do not eliminate that risk.

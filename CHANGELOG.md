@@ -7,6 +7,39 @@ all feature sets in a phase increments the middle number and resets the patch.
 feature sets in this level increment the patch (v0.2.1, …), and completing the
 level increments the middle number.
 
+## v0.2.7 — 2026-11-11
+
+**Pomodoro session persistence**
+
+### Implemented functionality
+
+- **Restart recovery** — the active Pomodoro phase, its due time, completed
+  work count and work length are stored in a single `pomodoro_state` row in
+  the assistant SQLite database. Closing JARVIS leaves the row intact.
+- **Remaining-time resume** — the next Pomodoro request restores the phase and
+  schedules only the remaining seconds. If JARVIS was closed past one or more
+  phase boundaries, elapsed work and break phases are advanced before the
+  next active timer is scheduled.
+- **Explicit stop still clears** — `/pomodoro stop` cancels the timer and
+  removes the persisted state, while a normal application shutdown preserves
+  it for restart.
+
+### Files
+
+- `core/pomodoro.py` — single-row state store, restart restoration, elapsed
+  phase advancement and the existing timer-backed phase controller.
+- `core/config.py`, `config/settings.toml` — `[pomodoro] db` setting and
+  validation.
+- `tests/test_remaining_411.py` — restart/remaining-time persistence coverage.
+- `README.md`, `CHANGELOG.md` — persistence behavior and version.
+
+### Testing
+
+- Focused remaining 4.11 suite: **13 tests, OK**.
+- Full suite: **537 tests, OK**.
+- `python -m compileall -q core tools config tests main.py` passed.
+- `git diff --check` passed.
+
 ## v0.2.6 — 2026-11-11 — 4.11 Productivity Management (M1-M11)
 
 **Local to-dos, planning, notes, habits, goals, time tracking, calendar,

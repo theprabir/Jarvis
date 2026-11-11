@@ -24,11 +24,19 @@ class NoModelClient:
 
 class PomodoroTests(unittest.TestCase):
     def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
         self.timers = TimerService(autostart=False)
         self.addCleanup(self.timers.close)
-        self.service = PomodoroService(
-            self.timers, PomodoroConfig(work_minutes=25, break_minutes=5)
+        self.config = PomodoroConfig(
+            db=str(Path(self.tmp.name) / "pomodoro.db"),
+            work_minutes=25,
+            break_minutes=5,
         )
+        self.service = PomodoroService(
+            self.timers, self.config
+        )
+        self.addCleanup(self.service.close)
 
     def test_work_then_break_then_work(self):
         status = self.service.start()
@@ -58,6 +66,19 @@ class PomodoroTests(unittest.TestCase):
             self.service.start(0)
         with self.assertRaises(PomodoroError):
             self.service.start(181)
+
+    def test_restores_phase_and_remaining_after_restart(self):
+        original = self.service.start()
+        self.service.close()
+        resumed_timers = TimerService(autostart=False)
+        self.addCleanup(resumed_timers.close)
+        resumed = PomodoroService(resumed_timers, self.config)
+        self.addCleanup(resumed.close)
+        status = resumed.status()
+        self.assertTrue(status.running)
+        self.assertEqual(status.phase, "work")
+        self.assertGreater(status.remaining_s, 0)
+        self.assertLessEqual(status.remaining_s, original.remaining_s)
 
     def test_intents_and_commands(self):
         router = IntentRouter()
@@ -186,6 +207,9 @@ class AssistantTests(unittest.TestCase):
             time=dataclasses.replace(settings.time, enabled=False),
             calendar=dataclasses.replace(settings.calendar, enabled=False),
             email=dataclasses.replace(settings.email, enabled=False),
+            pomodoro=dataclasses.replace(
+                settings.pomodoro, db=str(self.base / "pomodoro.db")
+            ),
             clipboard=dataclasses.replace(
                 settings.clipboard, db=str(self.base / "clipboard.db")
             ),

@@ -316,3 +316,9 @@ cache_entries = 128
 cache_db = "data/search_cache.db"
 # Read from the environment; never put the key itself in this file.
 brave_api_key_env = "BRAVE_API_KEY"
+# Advanced research reports: bounded history, saved sources and retrieval.
+research_db = "data/research.db"
+research_entries = 200
+research_retention_days = 180
+research_max_queries = 3
+research_max_sources = 6

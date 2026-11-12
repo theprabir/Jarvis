@@ -30,7 +30,7 @@ from web.base import (
 from web.brave import BraveProvider
 from web.cache import SearchCache
 from web.duckduckgo import DuckDuckGoProvider
-from web.extract import best_passage, download, extract_text
+from web.extract import best_passage, download, extract_published, extract_text
 from web.searxng import SearxngProvider
 from web.wikipedia import WikipediaProvider
 
@@ -173,6 +173,10 @@ class Searcher:
     self._cache.close()
     if self._owns_client:
       self._client.close()
+
+  def provider_names(self):
+    """Names of the configured provider chain, best first."""
+    return tuple(provider.name for provider in self._providers)
 
   def search(self, query, wikipedia=False):
     """Run one question through the provider chain and return its evidence."""
@@ -374,6 +378,7 @@ def _fetch_pages(client, results, config):
     text = extract_text(markup, result.url)
     if text:
       result.text = text
+      result.published = result.published or extract_published(markup)
       readable += 1
 
 

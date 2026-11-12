@@ -23,6 +23,8 @@ data/jarvis.db-*
 data/memory.json
 data/search_cache.db
 data/search_cache.db-*
+data/research.db
+data/research.db-*
 
 # Generated screenshots
 screenshots/

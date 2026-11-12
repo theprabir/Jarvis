@@ -395,10 +395,21 @@ class WebConfig:
   cache_entries: int = 128
   cache_db: str = "data/search_cache.db"
   brave_api_key_env: str = "BRAVE_API_KEY"
+  # Advanced research reports, saved sources and bounded history.
+  research_db: str = "data/research.db"
+  research_entries: int = 200
+  research_retention_days: int = 180
+  research_max_queries: int = 3
+  research_max_sources: int = 6
 
   @property
   def resolved_cache_db(self) -> Path:
     path = Path(self.cache_db)
+    return path if path.is_absolute() else (PROJECT_ROOT / path).resolve()
+
+  @property
+  def resolved_research_db(self) -> Path:
+    path = Path(self.research_db)
     return path if path.is_absolute() else (PROJECT_ROOT / path).resolve()
 
 
@@ -868,6 +879,23 @@ def _validate(settings):
   )
   _require(1 <= web.max_results <= 20, "[web] max_results must be 1-20")
   _require(1 <= web.max_queries <= 4, "[web] max_queries must be 1-4")
+  _require(bool(web.research_db), "[web] research_db must not be empty")
+  _require(
+      1 <= web.research_entries <= 2000,
+      "[web] research_entries must be 1-2000",
+  )
+  _require(
+      1 <= web.research_retention_days <= 3650,
+      "[web] research_retention_days must be 1-3650",
+  )
+  _require(
+      1 <= web.research_max_queries <= 5,
+      "[web] research_max_queries must be 1-5",
+  )
+  _require(
+      1 <= web.research_max_sources <= 12,
+      "[web] research_max_sources must be 1-12",
+  )
   _require(2.0 <= web.timeout_s <= 60.0, "[web] timeout_s must be 2-60")
   _require(
       50_000 <= web.max_page_bytes <= 2_000_000,

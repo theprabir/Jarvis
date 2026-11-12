@@ -87,6 +87,7 @@ from core.clipboard_history import (
 )
 from core.developer import DeveloperError, DeveloperService
 from core.pomodoro import PomodoroError, PomodoroService
+from core.research import ResearchError, ResearchService
 from core.summaries import SummaryError, SummaryService
 from core.mail import (
     EmailError,
@@ -221,11 +222,24 @@ def _supported(answer, evidence):
   available = set(words(source))
   return sum(1 for term in terms if term in available) >= 2
 
+
+def _research_id(value):
+  text = str(value or "").strip().lstrip("#")
+  if not text.isdigit():
+    raise ResearchError("a research id is required")
+  return int(text)
+
 WEB_DISABLED = "Web search is disabled, sir."
 MEMORY_DISABLED = "Memory is disabled, sir."
 WEB_EMPTY = "I couldn't find anything reliable about that on the web, sir."
 WEB_UNGROUNDED = (
     "I found sources but none of them actually answered that, sir."
+)
+RESEARCH_HELP = (
+    "Research commands: QUERY, run QUERY, compare QUERY, docs QUERY,"
+    " domain DOMAIN QUERY, providers, history [N], search TEXT, saved, show ID,"
+    " save ID [TITLE], remove ID. Reports include facts, source comparison,"
+    " contradictions, freshness and citations."
 )
 
 CONTINUE_PROMPT = (
@@ -241,7 +255,8 @@ FAILURE_REPLIES = {
 
 HELP_TEXT = (
     " Commands: /new starts a fresh conversation, /mode short|detailed|technical"
-    " changes how much I say, /web TEXT answers from web sources, /history"
+    " changes how much I say, /web TEXT answers from web sources, /research"
+    " builds multi-source reports with saved history, /history"
     " shows recent exchanges, /memory manages saved and learned memories"
     " (list, learned, episodes, explain ID), /tasks lists durable plans"
     " (show, approve, resume, cancel, history), /intent TEXT"
@@ -442,6 +457,7 @@ class Assistant:
     self._clipboard_history = None
     self._summaries = None
     self._developer = None
+    self._research = None
     self._notifier = None
     self._documents = None
     self._last_document = ""
@@ -693,6 +709,9 @@ class Assistant:
       self._weather.close()
       self._weather = None
     if self._searcher is not None:
+      if self._research is not None:
+        self._research.close()
+        self._research = None
       self._searcher.close()
       self._searcher = None
     if self._store is not None:
@@ -898,6 +917,19 @@ class Assistant:
         return None
     return self._searcher
 
+  def _get_research(self):
+    """Build the persistent research layer over the shared searcher."""
+    if self._research is None and self._settings.web.enabled:
+      searcher = self._get_searcher()
+      if searcher is None:
+        return None
+      try:
+        self._research = ResearchService(searcher, self._settings.web)
+      except ResearchError as exc:
+        log.error("Research history unavailable: %s", exc)
+        return None
+    return self._research
+
   def _answer_web(self, query, user_text=None, wikipedia=False):
     """Answer a question from fetched web evidence, with sources."""
     query = " ".join((query or "").split())
@@ -980,6 +1012,107 @@ class Assistant:
     if not lines:
       return "Sources: none"
     return "Sources:\n" + "\n".join(lines)
+
+  def _answer_research(self, intent):
+    service = self._get_research()
+    if service is None:
+      return WEB_DISABLED
+    try:
+      if intent.name == "research_history":
+        return self._research_history_text(service)
+      if intent.name == "research_saved":
+        return self._research_history_text(service, saved=True)
+      query = intent.entities.get("query", "")
+      mode = "compare" if intent.name == "research_compare" else "general"
+      if intent.name == "research_docs":
+        mode = "docs"
+      domain = intent.entities.get("domain", "")
+      return self._research_reply(service.run(query, mode=mode, domain=domain))
+    except ResearchError as exc:
+      return f"I couldn't complete that research, sir: {exc}."
+
+  def _research_command(self, text):
+    service = self._get_research()
+    if service is None:
+      return WEB_DISABLED
+    parts = text.split(maxsplit=1)
+    body = parts[1].strip() if len(parts) > 1 else ""
+    if not body:
+      return RESEARCH_HELP
+    action, separator, rest = body.partition(" ")
+    action = action.lower()
+    rest = rest.strip()
+    try:
+      if action in {"help", "?"}:
+        return RESEARCH_HELP
+      if action == "providers":
+        names = service.providers
+        return "Search providers: " + (
+            ", ".join(names) if names else "none"
+        ) + "."
+      if action in {"history", "list"}:
+        limit = int(rest) if rest.isdigit() else 20
+        return self._research_history_text(service, limit=limit)
+      if action in {"search", "find"}:
+        if not rest:
+          return "Usage: /research search TEXT"
+        return self._research_history_text(service, query=rest)
+      if action == "saved":
+        return self._research_history_text(service, saved=True)
+      if action in {"show", "load", "open"}:
+        return self._research_show_text(service, rest)
+      if action == "save":
+        identifier, _sep, title = rest.partition(" ")
+        row = service.save(_research_id(identifier), title)
+        return f"Saved research #{row['id']} as {row['title']!r}, sir."
+      if action in {"remove", "delete"}:
+        identifier = _research_id(rest)
+        service.delete(identifier)
+        return f"Deleted research #{identifier}, sir."
+      if action in {"compare", "docs"}:
+        if not rest:
+          return f"Usage: /research {action} QUERY"
+        mode = "compare" if action == "compare" else "docs"
+        return self._research_reply(service.run(rest, mode=mode))
+      if action == "domain":
+        domain, _sep, query = rest.partition(" ")
+        if not domain or not query.strip():
+          return "Usage: /research domain DOMAIN QUERY"
+        return self._research_reply(service.run(query.strip(), domain=domain))
+      if action == "run":
+        if not rest:
+          return RESEARCH_HELP
+        return self._research_reply(service.run(rest))
+      return self._research_reply(service.run(body))
+    except (ResearchError, ValueError) as exc:
+      return f"I couldn't complete that research, sir: {exc}."
+
+  @staticmethod
+  def _research_reply(result):
+    identifier = f" #{result['id']}" if result.get("id") else ""
+    return f"Research{identifier} — {result['query']}\n\n{result['report']}"
+
+  def _research_history_text(self, service, limit=20, saved=False, query=""):
+    try:
+      rows = service.history(limit=limit, saved=saved, query=query)
+    except ResearchError as exc:
+      return f"I couldn't read research history, sir: {exc}."
+    if not rows:
+      return "No saved research yet, sir." if saved else "No research history yet, sir."
+    if query:
+      lines = [f"Research matching {query!r}:"]
+    else:
+      lines = ["Saved research:" if saved else "Recent research:"]
+    for row in rows:
+      marker = " *" if row["saved"] else ""
+      lines.append(f"#{row['id']} {row['created']} {row['title']}{marker}")
+    return "\n".join(lines)
+
+  def _research_show_text(self, service, value):
+    identifier = _research_id(value)
+    row = service.get(identifier)
+    title = row["title"] or row["query"]
+    return f"Research #{row['id']} — {title}\n\n{row['report']}"
 
   # -- computer tools ---------------------------------------------------
 
@@ -1511,6 +1644,8 @@ class Assistant:
       return self._answer_summaries(intent)
     if intent.name.startswith("developer_"):
       return self._answer_developer(intent)
+    if intent.name.startswith("research_"):
+      return self._answer_research(intent)
     if intent.name.startswith("goal_"):
       return self._answer_goals(intent, user_text or "")
     if intent.name.startswith("habit_"):
@@ -4276,6 +4411,8 @@ class Assistant:
         return "Usage: /web <question>"
       original = text.split(maxsplit=1)[1] if len(parts) > 1 else argument
       return self._answer_web(original, user_text=text)
+    if command == "/research":
+      return self._research_command(text)
     if command == "/history":
       return self._history()
     if command == "/intent":

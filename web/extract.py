@@ -14,7 +14,7 @@ import re
 import httpx
 from lxml import html as lxml_html
 
-from web.base import words
+from web.base import normalize_date, words
 
 log = logging.getLogger(__name__)
 
@@ -50,6 +50,18 @@ BOILERPLATE = re.compile(
 MIN_PARAGRAPH = 40
 MAX_TEXT_CHARS = 6000
 SENTENCE = re.compile(r"(?<=[.!?])\s+")
+DATE_META = frozenset(
+    {
+        "article:published_time",
+        "article:modified_time",
+        "og:published_time",
+        "datepublished",
+        "datecreated",
+        "pubdate",
+        "publishdate",
+        "date",
+    }
+)
 
 _primp_client = None
 _primp_timeout = 0.0
@@ -140,6 +152,30 @@ def extract_text(markup, url=""):
   if text:
     return text
   return _lxml_text(markup)
+
+
+def extract_published(markup):
+  """Read a publication date from common metadata tags, or ``""``."""
+  try:
+    tree = lxml_html.fromstring(markup)
+  except (ValueError, lxml_html.etree.ParserError):
+    return ""
+  for node in tree.xpath("//meta"):
+    key = (
+        node.get("property")
+        or node.get("name")
+        or node.get("itemprop")
+        or ""
+    ).strip().lower()
+    if key in DATE_META:
+      value = normalize_date(node.get("content"))
+      if value:
+        return value
+  for node in tree.xpath("//time"):
+    value = normalize_date(node.get("datetime") or node.text_content())
+    if value:
+      return value
+  return ""
 
 
 def best_passage(text, terms=(), limit=600):

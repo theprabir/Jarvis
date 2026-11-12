@@ -88,6 +88,12 @@ CONVERSATION_INTENTS = frozenset(
         "new",
         "mode",
         "web_search",
+        "research",
+        "research_compare",
+        "research_docs",
+        "research_history",
+        "research_saved",
+        "research_domain",
         "remember_memory",
         "search_memory",
         "list_memory",
@@ -228,6 +234,7 @@ COMMANDS = frozenset(
         "summaries",
         "dev",
         "developer",
+        "research",
         "todo",
         "todos",
         "documents",
@@ -775,6 +782,68 @@ _DEVELOPER_DEBUG = re.compile(
     r"(?:\s*[:|-]\s*|\s+)(?P<error>.+)$",
     re.I | re.S,
 )
+_RESEARCH_HISTORY = re.compile(
+    r"^(?:(?:show|open|list)\s+(?:my\s+)?research\s+history"
+    r"|research\s+history)$",
+    re.I,
+)
+_RESEARCH_SAVED = re.compile(
+    r"^(?:show|list|open)\s+(?:my\s+)?saved\s+research$", re.I
+)
+_RESEARCH_COMPARE = re.compile(
+    r"^compare\s+(?:the\s+)?sources?\s+(?:on|for|about)\s+(?P<query>.+)$",
+    re.I,
+)
+_RESEARCH_DOCS = re.compile(
+    r"^(?:find|search(?:\s+for)?|look\s+up)\s+(?:the\s+)?"
+    r"(?:official\s+)?documentation\s+(?:for|on|about)\s+(?P<query>.+)$",
+    re.I,
+)
+_RESEARCH_DOMAIN = re.compile(
+    r"^(?:research|search)\s+(?P<domain>(?:[a-z0-9-]+\.)+[a-z]{2,})"
+    r"\s+for\s+(?P<query>.+)$",
+    re.I,
+)
+_RESEARCH = re.compile(
+    r"^(?:research|investigate|look\s+into)\s+(?P<query>.+)$", re.I
+)
+
+
+def recognize_research(text):
+  """Recognize multi-source research, documentation and saved reports."""
+  source = (text or "").strip().rstrip("?.!")
+  if not source:
+    return None
+  if _RESEARCH_HISTORY.match(source):
+    return Intent("research_history", 0.92, {})
+  if _RESEARCH_SAVED.match(source):
+    return Intent("research_saved", 0.92, {})
+  match = _RESEARCH_COMPARE.match(source)
+  if match:
+    return Intent(
+        "research_compare", 0.92, {"query": _clean(match.group("query"))}
+    )
+  match = _RESEARCH_DOCS.match(source)
+  if match:
+    return Intent(
+        "research_docs", 0.92, {"query": _clean(match.group("query"))}
+    )
+  match = _RESEARCH_DOMAIN.match(source)
+  if match:
+    return Intent(
+        "research_domain",
+        0.92,
+        {
+            "domain": match.group("domain").lower(),
+            "query": _clean(match.group("query")),
+        },
+    )
+  match = _RESEARCH.match(source)
+  if match:
+    query = _clean(match.group("query"))
+    if query:
+      return Intent("research", 0.9, {"query": query})
+  return None
 
 
 def recognize_utilities(text):
@@ -2386,6 +2455,9 @@ class IntentRouter:
     if intent is not None:
       return intent
     intent = recognize_summaries(text)
+    if intent is not None:
+      return intent
+    intent = recognize_research(text)
     if intent is not None:
       return intent
     intent = recognize_developer(text)

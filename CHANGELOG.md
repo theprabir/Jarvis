@@ -7,6 +7,56 @@ all feature sets in a phase increments the middle number and resets the patch.
 feature sets in this level increment the patch (v0.2.1, …), and completing the
 level increments the middle number.
 
+## v0.2.9 — 2026-11-12
+
+**Feature set 4.13 Advanced Web Research**
+
+### Implemented functionality
+
+- **Multiple providers** — research uses the existing Brave, SearXNG,
+  DuckDuckGo and Wikipedia provider chain, with fallback and provider listing.
+- **Domain search** — `/research domain example.com QUERY` validates the host
+  and adds a `site:` restriction.
+- **Documentation search** — `/research docs QUERY` adds official-documentation
+  and API-reference query variants and prioritizes known documentation hosts.
+- **Multi-query research** — a bounded set of variants is merged and deduplicated
+  by normalized URL.
+- **Article preservation** — fetched article text and publication metadata are
+  retained with each stored source.
+- **Fact extraction** — numeric and question-specific claims are extracted with
+  source numbers.
+- **Source comparison** — domain, publication date, freshness, article text and
+  fact counts are reported per source.
+- **Contradiction detection** — differing figures attached to similar claims are
+  surfaced for human review rather than hidden.
+- **Citations and reports** — numbered citations and a Markdown research report
+  include key facts, comparison, contradictions, freshness and preservation.
+- **Research history** — reports are stored in `data/research.db`, with bounded
+  unsaved history, explicit saving, retrieval, listing, deletion and keyword
+  lookup.
+- **Freshness assessment** — publication dates are classified as fresh, recent,
+  stale or unknown, and the report shows the overall result.
+
+### Important files
+
+- `core/research.py` — research orchestration, extraction, comparison,
+  freshness, reports and SQLite history.
+- `web/extract.py` — publication-date metadata extraction.
+- `web/search.py` — provider listing and publication metadata attached to
+  fetched results.
+- `core/assistant.py`, `core/intents.py` — `/research` commands, natural
+  routing, history and saved-report retrieval.
+- `core/config.py`, `config/settings.toml` — bounded research storage settings.
+- `tests/test_research.py` — offline research, report, store, intent and
+  assistant coverage.
+
+### Testing
+
+- Focused research suite: **8 tests, OK**.
+- Full suite: **556 tests, OK**.
+- `python -m compileall -q core web tests main.py` passed.
+- `git diff --check` passed.
+
 ## v0.2.8 — 2026-11-11
 
 **Pomodoro end-of-session, recovery visibility and complete 4.12 Developer Assistant**

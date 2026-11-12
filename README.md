@@ -6,11 +6,10 @@ around a small local LLM (Llama 3.2 1B Instruct Q4_K_M) served by the existing
 deterministic Python modules do the audio, routing and tool work.
 
 **Current status:** Phase 1 (stabilization) and feature sets **4.1 Voice
-Interface** through **4.11 Productivity Management** complete, plus optional
-document OCR with confidence warnings, released as **v0.2.8** in the
-moderate-advanced feature line. Phase 4.12 Developer Assistant is complete
-with local source, search, diagnostics, documentation, Git and confirmed
-execution tools.
+Interface** through **4.13 Advanced Web Research** complete, plus optional
+document OCR with confidence warnings, released as **v0.2.9** in the
+moderate-advanced feature line. Phase 4.12 Developer Assistant provides local
+source, search, diagnostics, documentation, Git and confirmed execution tools.
 JARVIS listens through the
 microphone with push-to-talk, transcribes offline with Vosk, keeps multi-turn
 context across restarts, remembers explicitly saved preferences, facts, paths
@@ -25,8 +24,8 @@ passages, extracts dates, tables and action items, compares and converts
 documents, searches the web and answers only from the fetched evidence with
 sources, converts units and text, reports the weather, runs timers and
 persisted reminders, falls back to the local model for everything else, and
-speaks through an interruptible Windows SAPI voice. Feature set 4.11 is in
-progress; its early milestones add local to-dos, deadlines, recurring tasks,
+speaks through an interruptible Windows SAPI voice. The 4.11 productivity
+suite adds local to-dos, deadlines, recurring tasks,
 validated to-do tools, deterministic date parsing and daily or weekly
 planning, local notes with quick capture and full-text search, daily habits
 with streaks and recurring reminders, goals with numeric progress and target
@@ -855,6 +854,48 @@ because many sites reject plain `httpx` with HTTP 403; `httpx` is the fallback.
 
 `BRAVE_API_KEY` is read from the environment, never from the config file.
 
+### Advanced research
+
+`/research QUESTION` runs a multi-query investigation over the configured
+search providers. Reports are deterministic and local: they preserve every
+source, extract numeric and question-specific facts, compare coverage and
+publication dates, flag conflicting figures, assess freshness and generate
+numbered citations. Each report is stored in `data/research.db` so it can be
+reopened without another search. No extra model or dependency is loaded.
+
+| Command | Purpose |
+| --- | --- |
+| `/research QUESTION` | Run a multi-query report |
+| `/research compare QUESTION` | Compare sources and coverage |
+| `/research docs QUESTION` | Documentation-focused search |
+| `/research domain DOMAIN QUESTION` | Restrict results with `site:DOMAIN` |
+| `/research providers` | Show the active provider chain |
+| `/research history [N]` | List recent reports |
+| `/research search TEXT` | Search stored reports |
+| `/research saved` | List explicitly saved reports |
+| `/research show ID` | Reopen a stored report and its sources |
+| `/research save ID [TITLE]` | Mark a report as saved |
+| `/research remove ID` | Delete one stored report |
+
+Natural forms include `research …`, `compare sources on …`, `find
+documentation for …`, `research example.com for …`, `show my research
+history` and `show saved research`.
+
+```toml
+[web]
+research_db = "data/research.db"
+research_entries = 200
+research_retention_days = 180
+research_max_queries = 3
+research_max_sources = 6
+```
+
+Unsaved history is pruned by age and count; saved reports remain. Research
+reuses the search cache, provider fallback, article extraction and the same
+read-only network path as ordinary web search. Contradiction detection is a
+heuristic over extracted figures, so it points to claims worth checking; it
+is not a verdict that one source is wrong.
+
 ```bat
 set BRAVE_API_KEY=...
 .venv\Scripts\python main.py
@@ -890,7 +931,8 @@ Voice mode is the default. JARVIS prints a short greeting, then waits:
 - `/new` starts a fresh conversation, `/mode short|detailed|technical` changes
   how much JARVIS says, `/history` shows recent exchanges, `/intent TEXT` shows
   the detected intent as JSON, `/tools` lists computer tools, `/documents`
-  manages local document indexing, search and generation, `/confirm` and
+  manages local document indexing, search and generation, `/research` builds
+  multi-source reports with history, `/confirm` and
   `/cancel` approve or drop a pending action, `/forget` deletes saved history
   after confirmation, and `/help` lists the commands.
 - `exit`, `quit`, `bye` (typed or spoken) shut down; Ctrl-C also exits cleanly.
@@ -976,6 +1018,8 @@ web/duckduckgo.py       DuckDuckGo provider (ddgs client plus HTML fallback)
 web/brave.py            Brave Search API provider
 web/extract.py          Page fetching (primp/httpx) and main-content extraction
 web/cache.py            Bounded SQLite search cache with stale fallback
+core/research.py        Multi-query reports, facts, comparison and history store
+tests/test_research.py  Research, report, store, domain and assistant coverage
 core/memory.py          Layered memory store, FTS5 search, episodes, ranking
 core/learning.py        Candidate extraction, importance, episodes, short-term buffer
 core/tasks.py           Durable plans, execution, approval, checkpoints, history
@@ -1075,9 +1119,11 @@ logs/                   Runtime logs (git-ignored)
 - Daily summaries read the local services and do not create or change data.
   Meeting summaries are extractive and do not understand speaker turns,
   decisions or action items beyond the supplied text.
-- Developer inspection is read-only and currently covers source explanation
-  and project structure only. It does not execute code, run tests, edit files
-  or provide Git history yet.
+- Developer tools stay inside `[tools] root` and use confirmation for writes,
+  tests and execution. Formatting is conservative whitespace normalization,
+  not a full AST formatter; scripts run in a sanitized subprocess with `-I`,
+  no shell and a timeout, which is not an operating-system isolation boundary.
+  Git support is read-only and never commits.
 - OCR is optional and uses the built-in Windows OCR engine, so it needs
   Windows and the matching OCR language pack. It reads scanned PDF pages up to
   `ocr_max_pages` and image files; low-resolution, rotated or unusual-font
@@ -1114,6 +1160,10 @@ logs/                   Runtime logs (git-ignored)
   scraping can break without notice - set `searx_url` for a self-hosted
   SearXNG, or `BRAVE_API_KEY` for a supported API. The Wikipedia lookup sends
   a descriptive User-Agent because Wikimedia blocks anonymous ones.
+- Advanced research reports are deterministic, so fact and contradiction
+  extraction is heuristic: it highlights conflicting figures but does not
+  decide which source is correct. Publication dates are available only when a
+  provider or page metadata supplies one; otherwise freshness is unknown.
 - Memory matching is lexical (no embeddings) and automatic learning covers a
   narrow set of first-person patterns; unusual phrasing is missed rather than
   guessed. Learned facts expire after 180 days and episode summaries after 30,

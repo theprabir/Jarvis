@@ -119,6 +119,55 @@ class ResearchTests(unittest.TestCase):
         "stale",
     )
 
+  def test_claim_grouping_handles_paraphrases_and_equivalent_values(self):
+    paraphrase = [
+        {"source": 1, "text": "The population was 10 million in 2025."},
+        {"source": 2, "text": "Population reached 12 million in 2025."},
+    ]
+    conflicts = find_contradictions(paraphrase)
+    self.assertEqual(len(conflicts), 1)
+    self.assertEqual(conflicts[0]["claim"], "population")
+    self.assertEqual(conflicts[0]["unit_class"], "count")
+    self.assertEqual(
+        {value["display"] for value in conflicts[0]["values"]},
+        {"10 million", "12 million"},
+    )
+    self.assertEqual(conflicts[0]["sources"], [1, 2])
+    equivalent = [
+        {"source": 1, "text": "The population was 10 million in 2025."},
+        {"source": 2, "text": "The population was 10,000,000 in 2025."},
+    ]
+    self.assertEqual(find_contradictions(equivalent), [])
+    bare_conflict = [
+        {"source": 1, "text": "The population was 10 million in 2025."},
+        {"source": 2, "text": "The population was 12,000,000 in 2025."},
+    ]
+    bare = find_contradictions(bare_conflict)
+    self.assertEqual(len(bare), 1)
+    self.assertEqual(bare[0]["unit_class"], "count")
+    different_units = [
+        {"source": 1, "text": "The temperature was 10 degrees today."},
+        {"source": 2, "text": "The temperature was 12 percent today."},
+    ]
+    self.assertEqual(find_contradictions(different_units), [])
+    repeated = [
+        {"source": 1, "text": "The population was 10 million in 2025."},
+        {"source": 2, "text": "The population was 10 million in 2025."},
+    ]
+    self.assertEqual(find_contradictions(repeated), [])
+    reordered = [
+        {"source": 1, "text": "The population of Tokyo was 10 million."},
+        {"source": 2, "text": "Tokyo population reached 12 million."},
+    ]
+    reordered_conflicts = find_contradictions(reordered)
+    self.assertEqual(len(reordered_conflicts), 1)
+    self.assertEqual(reordered_conflicts[0]["claim"], "population")
+    contrasted = [
+        {"source": 1, "text": "The city population was 10 million."},
+        {"source": 2, "text": "The country population was 12 million."},
+    ]
+    self.assertEqual(find_contradictions(contrasted), [])
+
   def test_service_builds_a_complete_report_and_saves_it(self):
     searcher = FakeSearcher(
         [
@@ -169,6 +218,31 @@ class ResearchTests(unittest.TestCase):
     self.assertTrue(any("site:example.com" in q for q in searcher.queries))
     with self.assertRaises(ResearchError):
       service.run("example", domain="not a domain")
+
+  def test_report_formats_grouped_conflicts_with_sources(self):
+    searcher = FakeSearcher(
+        [
+            source(
+                "City figures",
+                "https://example.com/city",
+                "The population of Tokyo was 10 million in 2025.",
+                "2026-11-01",
+            ),
+            source(
+                "Other figures",
+                "https://example.net/tokyo",
+                "Tokyo population reached 12 million in 2025.",
+                "2026-10-01",
+            ),
+        ]
+    )
+    service = ResearchService(searcher, self.config)
+    self.addCleanup(service.close)
+    report = service.run("tokyo population")["report"]
+    self.assertIn("**population** (count)", report)
+    self.assertIn("10 million ([1])", report)
+    self.assertIn("12 million ([2])", report)
+    self.assertIn("Confidence: high", report)
 
   def test_history_store_is_bounded_and_retrievable(self):
     store = ResearchStore(Path(self.tmp.name) / "history.db", max_entries=2)

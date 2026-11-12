@@ -37,6 +37,22 @@ level increments the middle number.
 - **Freshness assessment** — publication dates are classified as fresh, recent,
   stale or unknown, and the report shows the overall result.
 
+### Report quality improvements
+
+- **Paraphrase-aware grouping** — measurements are grouped by their normalized
+  head noun and unit class, so “population was 10 million” and “population
+  reached 12 million” are compared instead of being listed separately.
+- **Preposition handling** — “population of Tokyo” and “Tokyo population” meet
+  at the same claim, while contrasting qualifiers such as city and country stay
+  separate.
+- **Equivalent-value normalization** — `10 million`, `10,000,000` and unit
+  scales compare numerically; percentages, distances, masses and durations do
+  not produce false conflicts with counts.
+- **Cross-source facts preserved** — identical facts from different sources are
+  retained for agreement/conflict checks instead of being deduplicated away.
+- **Actionable conflict details** — each conflicting value lists its supporting
+  sources and the report includes a confidence level.
+
 ### Important files
 
 - `core/research.py` — research orchestration, extraction, comparison,
@@ -52,8 +68,8 @@ level increments the middle number.
 
 ### Testing
 
-- Focused research suite: **8 tests, OK**.
-- Full suite: **556 tests, OK**.
+- Focused research suite: **10 tests, OK**.
+- Full suite: **558 tests, OK**.
 - `python -m compileall -q core web tests main.py` passed.
 - `git diff --check` passed.
 

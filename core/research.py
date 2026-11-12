@@ -28,6 +28,85 @@ from web.base import (
 
 SENTENCE = re.compile(r"(?<=[.!?])\s+")
 NUMBER = re.compile(r"\d[\d,]*(?:\.\d+)?")
+UNIT_AFTER = re.compile(
+    r"\s*(%|percent(?:age)?|million|billion|trillion|thousand|km|kilometers?"
+    r"|kg|kilograms?|usd|dollars?|seconds?|minutes?|hours?|people|users?"
+    r"|examples?|degrees?)",
+    re.I,
+)
+SCALE = {
+    "thousand": 1_000.0,
+    "million": 1_000_000.0,
+    "billion": 1_000_000_000.0,
+    "trillion": 1_000_000_000_000.0,
+}
+UNIT_CLASS = {
+    "%": "percent",
+    "percent": "percent",
+    "percentage": "percent",
+    "km": "distance",
+    "kilometer": "distance",
+    "kilometers": "distance",
+    "kg": "mass",
+    "kilogram": "mass",
+    "kilograms": "mass",
+    "usd": "currency",
+    "dollar": "currency",
+    "dollars": "currency",
+    "second": "duration",
+    "seconds": "duration",
+    "minute": "duration",
+    "minutes": "duration",
+    "hour": "duration",
+    "hours": "duration",
+    "people": "count",
+    "user": "count",
+    "users": "count",
+    "example": "count",
+    "examples": "count",
+    "degree": "temperature",
+    "degrees": "temperature",
+}
+CLAIM_FILLER = frozenset(
+    {
+        "about",
+        "according",
+        "approximately",
+        "around",
+        "contain",
+        "contains",
+        "estimate",
+        "estimated",
+        "figure",
+        "figures",
+        "include",
+        "includes",
+        "nearly",
+        "number",
+        "numbers",
+        "over",
+        "reach",
+        "reached",
+        "report",
+        "reported",
+        "reports",
+        "stand",
+        "stands",
+        "stood",
+        "total",
+        "totaled",
+        "totalled",
+        "under",
+        "use",
+        "used",
+        "uses",
+        "using",
+    }
+)
+PREPOSITIONS = frozenset({"of", "in", "for", "at", "among", "across", "from"})
+CONTRAST_QUALIFIERS = frozenset(
+    {"city", "country", "state", "region", "world", "company", "total", "annual"}
+)
 DOC_HOSTS = (
     "docs.python.org",
     "developer.mozilla.org",
@@ -383,7 +462,7 @@ def extract_facts(sources, query=""):
       tokens = set(words(sentence))
       if not (NUMBER.search(sentence) or query_terms & tokens):
         continue
-      signature = " ".join(sorted(tokens))
+      signature = (index, " ".join(sorted(tokens)))
       if signature in seen:
         continue
       seen.add(signature)
@@ -394,35 +473,156 @@ def extract_facts(sources, query=""):
 
 
 def find_contradictions(facts):
-  """Find different figures attached to otherwise similar claims."""
+  """Find different normalized measurements for the same extracted claim.
+
+  Numbers are grouped by the noun immediately before them and by their unit
+  class, so paraphrases such as "the population was 10 million" and
+  "population reached 12 million" meet. Equivalent forms (10 million and
+  10,000,000) are normalized before comparison, and a year is never treated
+  as a measurement.
+  """
   groups = {}
   for fact in facts:
-    numbers = tuple(
-        number.replace(",", "").rstrip(".")
-        for number in NUMBER.findall(fact["text"])
-    )
-    if not numbers:
-      continue
-    key = _claim_key(fact["text"])
-    if not key:
-      continue
-    groups.setdefault(key, []).append((fact["source"], numbers, fact["text"]))
-  contradictions = []
-  for key, rows in groups.items():
-    values = {numbers for _source, numbers, _text in rows}
-    sources = sorted({source for source, _numbers, _text in rows})
-    if len(sources) >= 2 and len(values) >= 2:
-      contradictions.append(
+    for measurement in _measurements(fact["text"]):
+      key = (measurement["claim"], measurement["unit_class"])
+      bucket = groups.setdefault(key, {})
+      value = bucket.setdefault(
+          round(measurement["normalized"], 6),
           {
-              "claim": key,
-              "values": sorted(values),
-              "sources": sources,
-              "details": [text for _source, _numbers, text in rows[:4]],
-          }
+              "display": measurement["display"],
+              "sources": set(),
+              "details": [],
+          },
       )
-    if len(contradictions) >= 5:
+      value["sources"].add(fact["source"])
+      if fact["text"] not in value["details"]:
+        value["details"].append(fact["text"])
+  contradictions = []
+  for (claim, unit_class), bucket in groups.items():
+    sources = sorted(
+        {source for value in bucket.values() for source in value["sources"]}
+    )
+    if len(sources) < 2 or len(bucket) < 2:
+      continue
+    values = [
+        {
+            "display": value["display"],
+            "normalized": normalized,
+            "sources": sorted(value["sources"]),
+        }
+        for normalized, value in sorted(bucket.items())
+    ]
+    details = []
+    for value in bucket.values():
+      for text in value["details"]:
+        if text not in details:
+          details.append(text)
+    contradictions.append(
+        {
+            "claim": claim,
+            "unit_class": unit_class,
+            "values": values,
+            "sources": sources,
+            "details": details[:6],
+            "confidence": "high" if len(sources) >= 2 else "medium",
+        }
+    )
+  contradictions.sort(
+      key=lambda item: (len(item["sources"]), len(item["values"])), reverse=True
+  )
+  return contradictions[:5]
+
+
+def _measurements(text):
+  """Yield normalized numeric claims from one sentence."""
+  found = []
+  for match in NUMBER.finditer(text or ""):
+    raw = match.group(0).rstrip(".")
+    try:
+      number = float(raw.replace(",", ""))
+    except ValueError:
+      continue
+    tail = text[match.end(): match.end() + 30]
+    unit_match = UNIT_AFTER.match(tail)
+    unit = (unit_match.group(1).lower() if unit_match else "")
+    display = f"{raw}{(' ' + unit) if unit and unit != '%' else unit}"
+    prefix = text[max(0, match.start() - 1): match.start()]
+    unit_class = UNIT_CLASS.get(unit, "")
+    if not unit and prefix in {"$", "€", "£"}:
+      unit_class = "currency"
+    elif not unit_class and unit:
+      unit_class = "number"
+    if not unit:
+      if 1900 <= number <= 2100 and number == int(number):
+        continue
+      unit_class = "count"
+    scale = SCALE.get(unit, 1.0)
+    claim = _claim_parts(text[: match.start()])
+    if not claim:
+      claim = _claim_parts(text[match.end(): match.end() + 80]) or "value"
+    if unit in SCALE:
+      unit_class = "count"
+    found.append(
+        {
+            "claim": claim,
+            "unit_class": unit_class or "count",
+            "display": display.strip(),
+            "normalized": number * scale,
+        }
+    )
+  return found
+
+
+def _claim_parts(before):
+  """Return the normalized head noun before a measurement.
+
+  A prepositional phrase is removed first, so ``population of Tokyo was 10``
+  and ``Tokyo population reached 10`` both become ``population``. A small set
+  of contrasting qualifiers stays attached, keeping city and country figures
+  apart.
+  """
+  recent = words(before)[-18:]
+  cut = len(recent)
+  for index in range(len(recent) - 1, -1, -1):
+    if recent[index] in PREPOSITIONS:
+      before_preposition = [
+          word
+          for word in recent[:index]
+          if word not in STOPWORDS and word not in CLAIM_FILLER
+      ]
+      if before_preposition:
+        cut = index
       break
-  return contradictions
+  content = [
+      _stem(word)
+      for word in recent[:cut]
+      if word not in STOPWORDS
+      and word not in CLAIM_FILLER
+      and word not in UNIT_CLASS
+      and word not in SCALE
+  ]
+  if not content:
+    return ""
+  head = content[-1]
+  qualifier = next(
+      (word for word in content if word in CONTRAST_QUALIFIERS), ""
+  )
+  return f"{qualifier} {head}" if qualifier and qualifier != head else head
+
+
+def _stem(word):
+  """A small, deterministic suffix normalizer for claim grouping."""
+  if len(word) > 5 and word.endswith("ies"):
+    return word[:-3] + "y"
+  if len(word) > 6 and word.endswith("ing"):
+    return word[:-3]
+  if len(word) > 5 and word.endswith("ed"):
+    return word[:-2]
+  if len(word) > 4 and word.endswith("es"):
+    return word[:-2]
+  if len(word) > 4 and word.endswith("s"):
+    return word[:-1]
+  return word
 
 
 def assess_freshness(sources):
@@ -547,10 +747,14 @@ def build_report(
   lines.extend(["", "## Contradictions", ""])
   if contradictions:
     for item in contradictions:
-      values = ", ".join(" / ".join(value) for value in item["values"])
+      values = []
+      for value in item["values"]:
+        cited = ", ".join(f"[{number}]" for number in value["sources"])
+        values.append(f"{value['display']} ({cited})")
       lines.append(
-          f"- Possible conflict in **{item['claim']}**: {values}"
-          f" (sources {', '.join(f'[{n}]' for n in item['sources'])})."
+          f"- **{item['claim']}** ({item['unit_class']}): "
+          + " vs ".join(values)
+          + f". Confidence: {item.get('confidence', 'medium')}."
       )
   else:
     lines.append("- No conflicting figures were found in the extracted facts.")
@@ -603,15 +807,6 @@ def _docs_score(result):
   return 2.0 if any(
       host == domain or host.endswith("." + domain) for domain in DOC_HOSTS
   ) else 0.0
-
-
-def _claim_key(text):
-  stripped = NUMBER.sub(" # ", text.lower())
-  tokens = [
-      word for word in words(stripped)
-      if word not in STOPWORDS and word not in {"is", "was", "has", "had"}
-  ]
-  return " ".join(tokens[:8])
 
 
 def _domain(value):

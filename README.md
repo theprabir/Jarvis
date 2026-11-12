@@ -894,7 +894,9 @@ Unsaved history is pruned by age and count; saved reports remain. Research
 reuses the search cache, provider fallback, article extraction and the same
 read-only network path as ordinary web search. Contradiction detection is a
 heuristic over extracted figures, so it points to claims worth checking; it
-is not a verdict that one source is wrong.
+is not a verdict that one source is wrong. Claim grouping normalizes units,
+equivalent values, prepositions and common paraphrase verbs before comparing
+figures, and reports the supporting sources and confidence for each conflict.
 
 ```bat
 set BRAVE_API_KEY=...

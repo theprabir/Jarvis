@@ -9,6 +9,7 @@ from __future__ import annotations
 import ctypes
 import logging
 import os
+import re
 import shutil
 import subprocess
 from ctypes import wintypes
@@ -73,6 +74,8 @@ if os.name == "nt":
       wintypes.HWND, ctypes.POINTER(wintypes.DWORD)
   ]
   _user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+  _user32.GetForegroundWindow.argtypes = []
+  _user32.GetForegroundWindow.restype = wintypes.HWND
   _user32.PostMessageW.argtypes = [
       wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM
   ]
@@ -188,6 +191,40 @@ def visible_windows():
       {"hwnd": hwnd, "title": title, "pid": pid}
       for hwnd, title, pid in _windows_with_pid()
   ]
+
+
+def active_window():
+  """Return the foreground window's handle, title and process id."""
+  if _user32 is None:
+    raise ToolError("Window tools are only available on Windows")
+  hwnd = _user32.GetForegroundWindow()
+  if not hwnd:
+    raise ToolError("There is no active window")
+  length = _user32.GetWindowTextLengthW(hwnd)
+  buffer = ctypes.create_unicode_buffer(max(1, length + 1))
+  _user32.GetWindowTextW(hwnd, buffer, max(1, length + 1))
+  pid = wintypes.DWORD(0)
+  _user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+  return {
+      "hwnd": int(hwnd),
+      "title": buffer.value.strip(),
+      "pid": int(pid.value),
+  }
+
+
+def send_shortcut(keys):
+  """Send one validated keyboard shortcut to the active application."""
+  text = str(keys or "").strip().lower()
+  if not re.fullmatch(r"[a-z0-9+_`-]+", text):
+    raise ToolError("that keyboard shortcut is not valid")
+  try:
+    import keyboard
+  except ImportError as exc:
+    raise ToolError("keyboard shortcuts need the keyboard package") from exc
+  try:
+    keyboard.send(text)
+  except Exception as exc:
+    raise ToolError(f"I could not send the shortcut: {exc}") from exc
 
 
 def request_close(hwnd):

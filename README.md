@@ -6,10 +6,11 @@ around a small local LLM (Llama 3.2 1B Instruct Q4_K_M) served by the existing
 deterministic Python modules do the audio, routing and tool work.
 
 **Current status:** Phase 1 (stabilization) and feature sets **4.1 Voice
-Interface** through **4.13 Advanced Web Research** complete, plus optional
-document OCR with confidence warnings, released as **v0.2.9** in the
-moderate-advanced feature line. Phase 4.12 Developer Assistant provides local
-source, search, diagnostics, documentation, Git and confirmed execution tools.
+Interface** through **4.14 Application Intelligence** complete, plus optional
+document OCR with confidence warnings, released as **v0.2.10** in the
+moderate-advanced feature line. Phase 4.14 adds active-window detection,
+clipboard assistance, confirmed browser actions, page summaries, screenshot
+OCR and application documentation search.
 JARVIS listens through the
 microphone with push-to-talk, transcribes offline with Vosk, keeps multi-turn
 context across restarts, remembers explicitly saved preferences, facts, paths
@@ -644,6 +645,41 @@ script_timeout_s = 30.0
 allow_execution = true
 ```
 
+### Application intelligence
+
+`/app` reads the foreground Windows application and its window title without
+touching the application. Clipboard actions and keyboard sequences are
+explicit: browser tabs, reusable shortcuts, page summaries and screenshot OCR
+require confirmation. Page summaries use the browser's current URL, fetched
+article text and a local extractive summary; they do not upload the page.
+
+| Command | Purpose |
+| --- | --- |
+| `/app status`, `/app title` | Show the active application and window title |
+| `/app context` | Show app category, suggested actions and shortcuts |
+| `/app shortcuts` | List shortcuts for the active application |
+| `/app clipboard` | Read and classify clipboard content (confirmation) |
+| `/app explain` | Explain a copied error (confirmation) |
+| `/app search` | Search the currently copied or selected text |
+| `/app page` | Summarize the active browser page (confirmation) |
+| `/app tabs` | List browser tab shortcuts |
+| `/app new-tab`, `close-tab`, `next-tab`, `prev-tab`, `reload` | Confirmed browser actions |
+| `/app screenshot` | Capture the screen and OCR it (confirmation) |
+| `/app docs TOPIC` | Search documentation for the active application |
+
+Natural forms include `what app am i using`, `what is the active window
+title`, `show application shortcuts`, `explain copied error`, `search
+selected text`, `summarize this page`, `new browser tab`, `ocr screenshot` and
+`application documentation for ...`.
+
+```toml
+[application]
+enabled = true
+browser_processes = ["chrome", "msedge", "firefox", "brave", "opera", "vivaldi"]
+max_clipboard_chars = 12000
+max_page_chars = 6000
+```
+
 ### Document intelligence
 
 JARVIS reads local documents without uploading them. Extraction turns PDF,
@@ -1014,6 +1050,9 @@ tools/files.py          Sandboxed file and folder operations
 tools/apps.py           Allowlisted apps, URLs, paths and terminal commands
 tools/desktop.py        Screenshots, notifications and window control
 tools/clipboard.py      Clipboard read/write
+core/application.py     Active app, clipboard classification and browser actions
+tools/application.py    Application tool handlers for the validated registry
+tests/test_application.py  Active app, clipboard, browser and assistant coverage
 web/base.py             Search result type, URL and token helpers
 web/search.py           Query variants, ranking, evidence budget, orchestration
 web/duckduckgo.py       DuckDuckGo provider (ddgs client plus HTML fallback)
@@ -1166,6 +1205,12 @@ logs/                   Runtime logs (git-ignored)
   extraction is heuristic: it highlights conflicting figures but does not
   decide which source is correct. Publication dates are available only when a
   provider or page metadata supplies one; otherwise freshness is unknown.
+- Application intelligence is Windows-only. Active-window detection uses
+  user32, browser page URLs are obtained through the browser's address bar and
+  clipboard, and tab actions depend on browser keyboard shortcuts. This is not
+  a browser accessibility API: it cannot list tabs or read a page that blocks
+  fetching. Clipboard content is only read on an explicit command, and browser,
+  shortcut and screenshot actions require confirmation.
 - Memory matching is lexical (no embeddings) and automatic learning covers a
   narrow set of first-person patterns; unusual phrasing is missed rather than
   guessed. Learned facts expire after 180 days and episode summaries after 30,

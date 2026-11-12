@@ -7,6 +7,55 @@ all feature sets in a phase increments the middle number and resets the patch.
 feature sets in this level increment the patch (v0.2.1, …), and completing the
 level increments the middle number.
 
+## v0.2.10 — 2026-11-12
+
+**Feature set 4.14 Application Intelligence**
+
+### Implemented functionality
+
+- **Active application** — foreground-window detection through user32 and
+  process inspection; `/app status` and `/app title` are read-only.
+- **Context** — application category, window title and contextual suggestions
+  for browsers, editors, terminals and general desktop apps.
+- **Application shortcuts** — browser, editor and generic shortcut catalogs;
+  `/app shortcuts` lists the active app's keys.
+- **Clipboard assistance** — classification of URLs, code, text and errors;
+  `/app clipboard` is confirmation-only.
+- **Copied-error explanations** — deterministic guidance for Python imports,
+  syntax, files, permissions, connections, timeouts, JavaScript and HTTP errors.
+- **Selected-text search** — `/app search` reads the clipboard and routes the
+  selected text through the grounded web-search pipeline.
+- **Browser tab management** — confirmed new, close, reopen, next, previous,
+  reload and address actions with validated key sequences.
+- **Browser page summarization** — reads the active page URL, fetches its
+  article text and returns a local extractive summary.
+- **Screenshot OCR** — captures the screen and reads text through the existing
+  Windows OCR/document pipeline.
+- **Application documentation search** — `/app docs TOPIC` combines the active
+  application with documentation-focused research.
+
+### Important files
+
+- `core/application.py` — active-window context, clipboard classification,
+  error guidance, browser/page actions and OCR integration.
+- `tools/application.py` — validated safe and confirmation-only tool handlers.
+- `tools/desktop.py` — foreground window lookup and validated shortcut sender.
+- `tools/__init__.py` — application tool registration.
+- `core/assistant.py`, `core/intents.py` — `/app` commands, natural routing and
+  confirmed pending actions.
+- `core/config.py`, `config/settings.toml` — `[application]` configuration and
+  validation.
+- `tests/test_application.py` — active app, clipboard, browser, OCR, config,
+  intent, tool and assistant coverage.
+- `README.md`, `CHANGELOG.md` — v0.2.10 documentation.
+
+### Testing
+
+- Focused application suite: **12 tests, OK**.
+- Full suite: **570 tests, OK**.
+- `python -m compileall -q core tools config tests main.py` passed.
+- `git diff --check` passed.
+
 ## v0.2.9 — 2026-11-12
 
 **Feature set 4.13 Advanced Web Research**

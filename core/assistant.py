@@ -85,6 +85,7 @@ from core.clipboard_history import (
     ClipboardHistoryService,
     format_entry as format_clipboard_entry,
 )
+from core.application import ApplicationError, ApplicationService
 from core.developer import DeveloperError, DeveloperService
 from core.pomodoro import PomodoroError, PomodoroService
 from core.research import ResearchError, ResearchService
@@ -241,6 +242,13 @@ RESEARCH_HELP = (
     " save ID [TITLE], remove ID. Reports include facts, source comparison,"
     " contradictions, freshness and citations."
 )
+APPLICATION_DISABLED = "Application intelligence is disabled, sir."
+APPLICATION_HELP = (
+    "Application commands: status, context, title, shortcuts, clipboard,"
+    " explain, search, page, tabs, new-tab, close-tab, next-tab, prev-tab,"
+    " reload, address, back, forward, screenshot, docs TOPIC."
+    " Clipboard reads and window actions ask for confirmation."
+)
 
 CONTINUE_PROMPT = (
     "Continue exactly where your previous reply stopped. Do not repeat any"
@@ -272,8 +280,9 @@ HELP_TEXT = (
     " agendas, and /email drafts local messages and uses an explicitly"
     " configured account for search, reading and sending, /pomodoro runs work"
     " and break phases, /clipboard searches bounded copy history, /summary"
-    " builds daily or meeting summaries, and /dev explains, searches, documents"
-    " and inspects local projects. /help lists this."
+    " builds daily or meeting summaries, /dev explains, searches, documents and"
+    " inspects local projects, and /app explains the active application,"
+    " clipboard and browser context. /help lists this."
 )
 
 DOCUMENTS_HELP = (
@@ -458,6 +467,7 @@ class Assistant:
     self._summaries = None
     self._developer = None
     self._research = None
+    self._application = None
     self._notifier = None
     self._documents = None
     self._last_document = ""
@@ -481,6 +491,7 @@ class Assistant:
             self._get_clipboard_history,
             self._get_summaries,
             self._get_developer,
+            self._get_application,
         )
         if settings.tools.enabled
         else None
@@ -885,6 +896,18 @@ class Assistant:
       )
     return self._developer
 
+  def _get_application(self):
+    """Build application intelligence lazily; it owns no background state."""
+    if not self._settings.application.enabled:
+      return None
+    if self._application is None:
+      self._application = ApplicationService(
+          self._settings.application,
+          self._settings.tools,
+          self._settings.documents,
+      )
+    return self._application
+
   # -- web search -------------------------------------------------------
 
   def _get_tasks(self):
@@ -1113,6 +1136,171 @@ class Assistant:
     row = service.get(identifier)
     title = row["title"] or row["query"]
     return f"Research #{row['id']} — {title}\n\n{row['report']}"
+
+  def _answer_application(self, intent):
+    service = self._get_application()
+    if service is None:
+      return APPLICATION_DISABLED
+    try:
+      if intent.name in {"application_active", "application_title"}:
+        active = service.context()["active"]
+        if intent.name == "application_title":
+          return f"Active window: {active['title'] or '(no title)'}."
+        return (
+            f"Active application: {active['application']}"
+            f" ({active['process'] or 'unknown'}); window: "
+            f"{active['title'] or '(no title)'}."
+        )
+      if intent.name == "application_shortcuts":
+        return self._application_shortcuts_text(service)
+      if intent.name == "application_context":
+        return self._application_context_text(service)
+      if intent.name == "application_explain":
+        return self._application_pending(
+            "application_explain", {}, "explain copied error"
+        )
+      if intent.name == "application_search":
+        query = service.search_selected()
+        return self._answer_web(query, user_text=query)
+      if intent.name == "application_page":
+        return self._application_pending(
+            "application_page", {}, "summarize this page"
+        )
+      if intent.name == "application_tab":
+        action = intent.entities.get("action", "")
+        return self._application_browser_pending(action, "browser tab")
+      if intent.name == "application_screenshot":
+        return self._application_pending(
+            "application_screenshot", {}, "OCR the screenshot"
+        )
+      if intent.name == "application_docs":
+        return self._application_docs(
+            service, intent.entities.get("query", "")
+        )
+    except ApplicationError as exc:
+      return f"I couldn't complete that application request, sir: {exc}."
+    return APPLICATION_HELP
+
+  def _application_command(self, text):
+    service = self._get_application()
+    if service is None:
+      return APPLICATION_DISABLED
+    parts = text.split(maxsplit=1)
+    body = parts[1].strip() if len(parts) > 1 else ""
+    if not body:
+      return self._application_context_text(service)
+    action, _separator, rest = body.partition(" ")
+    action = action.lower()
+    rest = rest.strip()
+    try:
+      if action in {"help", "?"}:
+        return APPLICATION_HELP
+      if action in {"status", "active", "app"}:
+        return self._answer_application(
+            Intent("application_active", 1.0, {})
+        )
+      if action == "title":
+        return self._answer_application(
+            Intent("application_title", 1.0, {})
+        )
+      if action == "context":
+        return self._application_context_text(service)
+      if action in {"shortcuts", "keys"}:
+        return self._application_shortcuts_text(service)
+      if action == "clipboard":
+        return self._application_pending(
+            "application_clipboard", {}, text
+        )
+      if action in {"explain", "error"}:
+        return self._application_pending("application_explain", {}, text)
+      if action in {"search", "selection"}:
+        query = service.search_selected()
+        return self._answer_web(query, user_text=text)
+      if action in {"page", "summarize-page", "summarise-page"}:
+        return self._application_pending("application_page", {}, text)
+      if action == "tabs":
+        return self._application_tabs_text(service)
+      tab_actions = {
+          "new-tab": "new_tab",
+          "close-tab": "close_tab",
+          "next-tab": "next_tab",
+          "prev-tab": "previous_tab",
+          "previous-tab": "previous_tab",
+          "reopen-tab": "reopen_tab",
+          "reload": "reload",
+          "address": "address",
+          "back": "back",
+          "forward": "forward",
+      }
+      if action in tab_actions:
+        return self._application_browser_pending(tab_actions[action], text)
+      if action in {"screenshot", "ocr", "read-screen"}:
+        return self._application_pending(
+            "application_screenshot", {}, text
+        )
+      if action in {"docs", "documentation"}:
+        return self._application_docs(service, rest)
+      return APPLICATION_HELP
+    except ApplicationError as exc:
+      return f"I couldn't complete that application request, sir: {exc}."
+
+  def _application_pending(self, name, arguments, user_text):
+    tool = self.registry.get(name) if self.registry is not None else None
+    if tool is None:
+      return "That application action needs the tool registry, sir."
+    self._pending_tool = (name, arguments, user_text)
+    self._pending_plan = None
+    self._pending_task = None
+    return f"{tool.describe(arguments)}. Please confirm to continue."
+
+  def _application_browser_pending(self, action, user_text):
+    return self._application_pending(
+        "application_browser", {"action": action}, user_text
+    )
+
+  @staticmethod
+  def _application_context_text(service):
+    data = service.context()
+    active = data["active"]
+    actions = "; ".join(data["actions"])
+    return (
+        f"Active: {active['application']} — {active['title'] or '(no title)'}.\n"
+        f"Category: {data['category']}.\n"
+        f"Suggested actions: {actions}."
+    )
+
+  @staticmethod
+  def _application_shortcuts_text(service):
+    data = service.shortcuts()
+    lines = [f"Shortcuts for {data['application']}:"]
+    for item in data["shortcuts"]:
+      lines.append(f"- {item['label']}: {item['keys']}")
+    return "\n".join(lines)
+
+  @staticmethod
+  def _application_tabs_text(service):
+    data = service.shortcuts()
+    tabs = [
+        item for item in data["shortcuts"]
+        if item["action"] in {
+            "new_tab", "close_tab", "reopen_tab", "next_tab", "previous_tab"
+        }
+    ]
+    if not tabs:
+      return "The active application is not a supported browser, sir."
+    return "Browser tabs: " + "; ".join(
+        f"{item['action']} ({item['keys']})" for item in tabs
+    ) + "."
+
+  def _application_docs(self, service, topic):
+    query = service.documentation_query(topic)
+    research = self._get_research()
+    if research is not None:
+      try:
+        return self._research_reply(research.run(query, mode="docs"))
+      except ResearchError as exc:
+        return f"I couldn't search documentation, sir: {exc}."
+    return self._answer_web(query, user_text=topic)
 
   # -- computer tools ---------------------------------------------------
 
@@ -1646,6 +1834,8 @@ class Assistant:
       return self._answer_developer(intent)
     if intent.name.startswith("research_"):
       return self._answer_research(intent)
+    if intent.name.startswith("application_"):
+      return self._answer_application(intent)
     if intent.name.startswith("goal_"):
       return self._answer_goals(intent, user_text or "")
     if intent.name.startswith("habit_"):
@@ -4413,6 +4603,8 @@ class Assistant:
       return self._answer_web(original, user_text=text)
     if command == "/research":
       return self._research_command(text)
+    if command in {"/app", "/application"}:
+      return self._application_command(text)
     if command == "/history":
       return self._history()
     if command == "/intent":

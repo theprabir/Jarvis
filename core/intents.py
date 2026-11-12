@@ -94,6 +94,16 @@ CONVERSATION_INTENTS = frozenset(
         "research_history",
         "research_saved",
         "research_domain",
+        "application_active",
+        "application_title",
+        "application_shortcuts",
+        "application_context",
+        "application_explain",
+        "application_search",
+        "application_page",
+        "application_tab",
+        "application_screenshot",
+        "application_docs",
         "remember_memory",
         "search_memory",
         "list_memory",
@@ -235,6 +245,8 @@ COMMANDS = frozenset(
         "dev",
         "developer",
         "research",
+        "app",
+        "application",
         "todo",
         "todos",
         "documents",
@@ -808,6 +820,60 @@ _RESEARCH = re.compile(
     r"^(?:research|investigate|look\s+into)\s+(?P<query>.+)$", re.I
 )
 
+_APPLICATION_ACTIVE = re.compile(
+    r"^(?:(?:what(?:'s|\s+is)\s+)?(?:the\s+)?"
+    r"(?:active|current)\s+(?:app|application|window)"
+    r"|what\s+(?:app|application)\s+(?:am\s+i\s+using|is\s+active)"
+    r"|which\s+(?:app|application)\s+is\s+active)$",
+    re.I,
+)
+_APPLICATION_TITLE = re.compile(
+    r"^(?:(?:what(?:'s|\s+is)\s+)?(?:the\s+)?(?:active|current)\s+window\s+title"
+    r"|read\s+(?:the\s+)?(?:active|current)\s+window\s+title)$",
+    re.I,
+)
+_APPLICATION_SHORTCUTS = re.compile(
+    r"^(?:show|list)\s+(?:the\s+)?(?:app|application)?\s*shortcuts"
+    r"|what\s+shortcuts\s+does\s+(?:this|the)\s+(?:app|application)\s+have$",
+    re.I,
+)
+_APPLICATION_CONTEXT = re.compile(
+    r"^(?:(?:show|give\s+me)\s+(?:the\s+)?(?:application|app)\s+context"
+    r"|what\s+can\s+i\s+do\s+in\s+this\s+(?:app|application))$",
+    re.I,
+)
+_APPLICATION_EXPLAIN = re.compile(
+    r"^(?:explain|debug)\s+(?:the\s+)?(?:copied|clipboard)\s+"
+    r"(?:error|exception|traceback)$",
+    re.I,
+)
+_APPLICATION_SEARCH = re.compile(
+    r"^(?:search|look\s+up|google)\s+(?:the\s+|this\s+)?"
+    r"(?:selected|highlighted)\s+(?:text|selection)$",
+    re.I,
+)
+_APPLICATION_PAGE = re.compile(
+    r"^(?:summari[sz]e|summary\s+of)\s+(?:this|the\s+current|current)\s+"
+    r"(?:browser\s+)?page$",
+    re.I,
+)
+_APPLICATION_TAB = re.compile(
+    r"^(?P<verb>new|open|close|next|previous|prev|reopen|reload)\s+"
+    r"(?:(?:a|the|current|browser|new)\s+)*tab$",
+    re.I,
+)
+_APPLICATION_SCREENSHOT = re.compile(
+    r"^(?:ocr|read|extract\s+text\s+from)\s+(?:the\s+)?"
+    r"(?:screenshot|screen)$",
+    re.I,
+)
+_APPLICATION_DOCS = re.compile(
+    r"^(?:(?:find|search\s+for|look\s+up)\s+)?(?:the\s+)?"
+    r"(?:app|application)\s+(?:documentation|docs)\s+(?:for|on)\s+"
+    r"(?P<query>.+)$",
+    re.I,
+)
+
 
 def recognize_research(text):
   """Recognize multi-source research, documentation and saved reports."""
@@ -843,6 +909,50 @@ def recognize_research(text):
     query = _clean(match.group("query"))
     if query:
       return Intent("research", 0.9, {"query": query})
+  return None
+
+
+def recognize_application(text):
+  """Recognize foreground-app, clipboard and browser requests."""
+  source = (text or "").strip().rstrip("?.!")
+  if not source:
+    return None
+  if _APPLICATION_ACTIVE.match(source):
+    return Intent("application_active", 0.93, {})
+  if _APPLICATION_TITLE.match(source):
+    return Intent("application_title", 0.93, {})
+  if _APPLICATION_SHORTCUTS.match(source):
+    return Intent("application_shortcuts", 0.92, {})
+  if _APPLICATION_CONTEXT.match(source):
+    return Intent("application_context", 0.92, {})
+  if _APPLICATION_EXPLAIN.match(source):
+    return Intent("application_explain", 0.94, {})
+  if _APPLICATION_SEARCH.match(source):
+    return Intent("application_search", 0.94, {})
+  if _APPLICATION_PAGE.match(source):
+    return Intent("application_page", 0.93, {})
+  match = _APPLICATION_TAB.match(source)
+  if match:
+    actions = {
+        "new": "new_tab",
+        "open": "new_tab",
+        "close": "close_tab",
+        "next": "next_tab",
+        "previous": "previous_tab",
+        "prev": "previous_tab",
+        "reopen": "reopen_tab",
+        "reload": "reload",
+    }
+    return Intent(
+        "application_tab", 0.93, {"action": actions[match.group("verb").lower()]}
+    )
+  if _APPLICATION_SCREENSHOT.match(source):
+    return Intent("application_screenshot", 0.92, {})
+  match = _APPLICATION_DOCS.match(source)
+  if match:
+    return Intent(
+        "application_docs", 0.9, {"query": _clean(match.group("query"))}
+    )
   return None
 
 
@@ -2458,6 +2568,9 @@ class IntentRouter:
     if intent is not None:
       return intent
     intent = recognize_research(text)
+    if intent is not None:
+      return intent
+    intent = recognize_application(text)
     if intent is not None:
       return intent
     intent = recognize_developer(text)

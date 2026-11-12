@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from tools import (
+    application,
     apps,
     calendar,
     clipboard,
@@ -55,6 +56,7 @@ def build_registry(
     clipboard_service=None,
     summary_service=None,
     developer_service=None,
+    application_service=None,
 ):
   """Build the registry for the current configuration."""
   config = settings.tools
@@ -1135,6 +1137,69 @@ def build_registry(
         permission=CONFIRM,
         timeout_s=120.0,
         preview=lambda args: f"Run Python script {shown(args['path'])}",
+    )
+
+  # Application intelligence. Clipboard reads and key sequences are confirmed.
+  if application_service is not None and settings.application.enabled:
+    add(
+        "application_context",
+        "Show the active application and window title",
+        lambda: application.context(application_service),
+    )
+    add(
+        "application_shortcuts",
+        "Show shortcuts for the active application",
+        lambda: application.shortcuts(application_service),
+    )
+    add(
+        "application_clipboard",
+        "Read and classify the clipboard",
+        lambda: application.clipboard(application_service),
+        permission=CONFIRM,
+        timeout_s=15.0,
+        preview=lambda arguments: "Read the clipboard",
+    )
+    add(
+        "application_explain",
+        "Explain the error currently on the clipboard",
+        lambda: application.explain(application_service),
+        permission=CONFIRM,
+        timeout_s=15.0,
+        preview=lambda arguments: "Explain the copied error",
+    )
+    add(
+        "application_browser",
+        "Manage browser tabs with a validated shortcut",
+        lambda action: application.browser(application_service, action),
+        {"action": str},
+        required=("action",),
+        permission=CONFIRM,
+        preview=lambda args: f"Use browser action {args.get('action', '')}",
+    )
+    add(
+        "application_shortcut",
+        "Send a shortcut for the active application",
+        lambda action: application.shortcut(application_service, action),
+        {"action": str},
+        required=("action",),
+        permission=CONFIRM,
+        preview=lambda args: f"Send shortcut {args.get('action', '')}",
+    )
+    add(
+        "application_page",
+        "Read and summarize the active browser page",
+        lambda: application.page(application_service),
+        permission=CONFIRM,
+        timeout_s=30.0,
+        preview=lambda arguments: "Summarize the active browser page",
+    )
+    add(
+        "application_screenshot",
+        "Capture the screen and OCR its text",
+        lambda: application.screenshot(application_service),
+        permission=CONFIRM,
+        timeout_s=60.0,
+        preview=lambda arguments: "Capture and OCR the screen",
     )
 
   return registry

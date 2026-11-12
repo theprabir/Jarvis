@@ -261,6 +261,13 @@ test_timeout_s = 120.0
 script_timeout_s = 30.0
 allow_execution = true
 
+[application]
+# Active-window detection, clipboard assistance and confirmed browser actions.
+enabled = true
+browser_processes = ["chrome", "msedge", "firefox", "brave", "opera", "vivaldi"]
+max_clipboard_chars = 12000
+max_page_chars = 6000
+
 [documents]
 # Local document intelligence: PDF, DOCX, TXT, Markdown, CSV and XLSX.
 # Text and tables stay on this machine; only retrieved passages are sent to

@@ -319,6 +319,21 @@ class DeveloperConfig:
 
 
 @dataclass(frozen=True)
+class ApplicationConfig:
+  enabled: bool = True
+  browser_processes: tuple[str, ...] = (
+      "chrome",
+      "msedge",
+      "firefox",
+      "brave",
+      "opera",
+      "vivaldi",
+  )
+  max_clipboard_chars: int = 12_000
+  max_page_chars: int = 6_000
+
+
+@dataclass(frozen=True)
 class DocumentsConfig:
   enabled: bool = True
   # Document metadata and chunk index share the assistant database.
@@ -433,6 +448,7 @@ class Settings:
   pomodoro: PomodoroConfig
   clipboard: ClipboardConfig
   developer: DeveloperConfig
+  application: ApplicationConfig
   documents: DocumentsConfig
   memory: MemoryConfig
   weather: WeatherConfig
@@ -759,6 +775,28 @@ def _validate(settings):
       "[developer] allow_execution must be true or false",
   )
 
+  application = settings.application
+  _require(
+      isinstance(application.enabled, bool),
+      "[application] enabled must be true or false",
+  )
+  _require(
+      bool(application.browser_processes),
+      "[application] browser_processes must not be empty",
+  )
+  _require(
+      all(isinstance(name, str) and name.strip() for name in application.browser_processes),
+      "[application] browser_processes must contain names",
+  )
+  _require(
+      1000 <= application.max_clipboard_chars <= 100_000,
+      "[application] max_clipboard_chars must be 1000-100000",
+  )
+  _require(
+      1000 <= application.max_page_chars <= 50_000,
+      "[application] max_page_chars must be 1000-50000",
+  )
+
   documents = settings.documents
   _require(bool(documents.db), "[documents] db must not be empty")
   _require(
@@ -962,6 +1000,9 @@ def load_settings(path=None):
       pomodoro=_build(PomodoroConfig, raw.get("pomodoro", {}), "pomodoro"),
       clipboard=_build(ClipboardConfig, raw.get("clipboard", {}), "clipboard"),
       developer=_build(DeveloperConfig, raw.get("developer", {}), "developer"),
+      application=_build(
+          ApplicationConfig, raw.get("application", {}), "application"
+      ),
       documents=_build(
           DocumentsConfig, raw.get("documents", {}), "documents"
       ),

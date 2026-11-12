@@ -172,6 +172,8 @@ class ServerCommandTests(unittest.TestCase):
     self.assertIn("-np", command)
     self.assertEqual(command[command.index("-np") + 1], "1")
     self.assertEqual(command[command.index("-t") + 1], "2")
+    self.assertEqual(command[command.index("-ctk") + 1], "q8_0")
+    self.assertEqual(command[command.index("-ctv") + 1], "q8_0")
     self.assertEqual(command[command.index("-ub") + 1], "64")
     self.assertEqual(command[command.index("-ngl") + 1], "0")
 

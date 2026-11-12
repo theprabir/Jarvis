@@ -1,14 +1,15 @@
 # JARVIS
 
 A local-first, voice-and-text personal AI assistant for Windows 11, built
-around a small local LLM (Llama 3.2 1B Instruct Q4_K_M) served by the existing
-`llama-server.exe` from llama.cpp. The model is the language interface;
-deterministic Python modules do the audio, routing and tool work.
+around a small local LLM (IBM Granite 4.0 1B Instruct Q4_K_M) served by the
+existing `llama-server.exe` from llama.cpp. The model is the language
+interface; deterministic Python modules do the audio, routing and tool work.
 
 **Current status:** Phase 1 (stabilization) and feature sets **4.1 Voice
 Interface** through **4.14 Application Intelligence** complete, plus optional
-document OCR with confidence warnings, released as **v0.2.10** in the
-moderate-advanced feature line. Phase 4.14 adds active-window detection,
+document OCR with confidence warnings, currently **v0.2.11** in the
+moderate-advanced feature line. v0.2.11 switches the local model to IBM
+Granite 4.0 1B Instruct Q4_K_M. Phase 4.14 adds active-window detection,
 clipboard assistance, confirmed browser actions, page summaries, screenshot
 OCR and application documentation search.
 JARVIS listens through the
@@ -41,13 +42,13 @@ meeting summaries (see
 - Windows 11, 64-bit Python (3.11+)
 - `llama-server.exe` on `PATH` (existing llama.cpp installation; do **not**
   replace it with `llama-cpp-python`)
-- `models/Llama-3.2-1B-Instruct-Q4_K_M.gguf`
+- `models/granite-4.0-1b-Q4_K_M.gguf`
 - A microphone and speakers; speech output needs a Windows SAPI voice
   (Microsoft David or Zira ship with Windows)
 - OCR needs Windows and an installed Windows OCR language pack; `en-US` is
   available on most English installations
-- 8 GB RAM target machine. Measured: ~0.95 GB total with the LLM loaded, and
-  ~195 MB for the Python voice process (Vosk model, SAPI, audio stack)
+- 8 GB RAM target machine. Measured: ~1.16 GB benchmark with the LLM loaded;
+  ~1.29 GB combined with the small Vosk voice model loaded
 
 ## Installation
 
@@ -67,6 +68,12 @@ powershell -Command "Expand-Archive -Path models\vosk-model-small-en-us-0.15.zip
 If the model directory is missing, JARVIS logs a warning and starts in text
 mode instead of failing.
 
+Download the language model once (about 1 GB) into `models/`:
+
+```bat
+curl -L -o models\granite-4.0-1b-Q4_K_M.gguf https://huggingface.co/ibm-granite/granite-4.0-1b-GGUF/resolve/main/granite-4.0-1b-Q4_K_M.gguf?download=true
+```
+
 ## Configuration
 
 All runtime settings live in `config/settings.toml`:
@@ -74,7 +81,7 @@ All runtime settings live in `config/settings.toml`:
 | Section | Purpose |
 | --- | --- |
 | `[app]` | Log level and log directory |
-| `[llama]` | Executable, model path, host/port, context, threads, batch sizes, slots, startup timeout |
+| `[llama]` | Executable, model path, host/port, context, KV cache type, threads, batch sizes, slots, startup timeout |
 | `[llm]` | Connect/read timeouts, max tokens, temperature, retries |
 | `[tts]` | Speech flag, rate (words/minute), volume, voice name substring |
 | `[voice]` | Voice mode flag, microphone, push-to-talk key, VAD, silence/record limits, Vosk model path |
@@ -114,9 +121,9 @@ here with SAPI-synthesized sentences (two voices, 20 clips):
 | `vosk-model-small-en-us-0.15` (default) | 68 MB | 181 MB | ~2.1 s | 3.4 % |
 | `vosk-model-en-us-0.22-lgraph` | 204 MB | 396 MB | ~10.5 s | 4.4 % |
 
-The large model triples memory (assistant total would be 1305 MB, over the
-1.3 GB target) and is about five times slower on this CPU without being more
-accurate, so the small model stays the default. `stt_model` accepts any Vosk
+The large model more than doubles the voice footprint and pushes the assistant
+past the 1.3 GB target, while being about five times slower on this CPU without
+being more accurate, so the small model stays the default. `stt_model` accepts any Vosk
 model folder from <https://alphacephei.com/vosk/models>; if the configured
 folder is missing, JARVIS loads the largest `vosk-model-*` in `models/` and
 logs which one it used.
@@ -141,8 +148,9 @@ If a reply still reaches its token limit, JARVIS asks the model to
 continue where it stopped (`max_continuations`, default 1), joins the
 fragments and drops any sentence the model repeated, so an answer is not
 left half-written. The finish reason is logged with every reply. On this
-CPU generation runs at about 5 tokens/s, so a full detailed answer takes
-roughly 50 seconds.
+CPU generation runs at about 7–8 tokens/s in steady state, so a full detailed
+answer takes roughly 30–40 seconds; the first request after loading can be
+slower.
 
 Completed exchanges are written to `history_db` (`data/jarvis.db`, table
 `conversations`). A short request that only refers to something ("what about
@@ -1165,6 +1173,12 @@ logs/                   Runtime logs (git-ignored)
   not a full AST formatter; scripts run in a sanitized subprocess with `-I`,
   no shell and a timeout, which is not an operating-system isolation boundary.
   Git support is read-only and never commits.
+- The local model is Granite 4.0 1B Q4_K_M, a 1.6B-parameter CPU model. At
+  2048 context with a q8_0 KV cache the server uses about 1.12 GB of working
+  set and generates roughly 7–8 tokens/s in steady state on this machine.
+  Longer contexts or an f16 cache increase memory and prefill time, so the
+  2048-token setting is intentional. The deterministic router handles tools;
+  native model tool calling is not enabled.
 - OCR is optional and uses the built-in Windows OCR engine, so it needs
   Windows and the matching OCR language pack. It reads scanned PDF pages up to
   `ocr_max_pages` and image files; low-resolution, rotated or unusual-font

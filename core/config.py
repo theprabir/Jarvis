@@ -30,10 +30,11 @@ class AppConfig:
 @dataclass(frozen=True)
 class LlamaConfig:
   executable: str = "llama-server"
-  model_path: str = "models/Llama-3.2-1B-Instruct-Q4_K_M.gguf"
+  model_path: str = "models/granite-4.0-1b-Q4_K_M.gguf"
   host: str = "127.0.0.1"
   port: int = 8080
   context_size: int = 2048
+  kv_cache_type: str = "q8_0"
   threads: int = 2
   threads_batch: int = 2
   batch_size: int = 64
@@ -488,6 +489,10 @@ def _validate(settings):
   _require(bool(llama.host), "[llama] host must not be empty")
   _require(1 <= llama.port <= 65535, "[llama] port must be 1-65535")
   _require(256 <= llama.context_size <= 8192, "[llama] context_size must be 256-8192")
+  _require(
+      llama.kv_cache_type in {"f16", "q8_0"},
+      "[llama] kv_cache_type must be f16 or q8_0",
+  )
   _require(1 <= llama.threads <= 4, "[llama] threads must be 1-4 on this CPU")
   _require(1 <= llama.threads_batch <= 4, "[llama] threads_batch must be 1-4")
   _require(1 <= llama.batch_size <= 2048, "[llama] batch_size must be 1-2048")

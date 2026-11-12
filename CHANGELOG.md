@@ -7,6 +7,31 @@ all feature sets in a phase increments the middle number and resets the patch.
 feature sets in this level increment the patch (v0.2.1, …), and completing the
 level increments the middle number.
 
+## v0.2.11 — 2026-11-12
+
+**Runtime model switch: IBM Granite 4.0 1B Instruct Q4_K_M**
+
+- Replaced Llama 3.2 1B Instruct Q4_K_M with Granite 4.0 1B Instruct
+  Q4_K_M from IBM's official GGUF repository.
+- Kept the CPU-only runtime at 2 threads, 2048-token context, one parallel
+  slot, batch sizes 64/64 and zero GPU layers.
+- Added a configurable `q8_0` KV cache (`[llama] kv_cache_type`) so the
+  larger model stays inside the 1.3 GB assistant working-set target.
+- Updated the default model path, `config/settings.toml`, the technology
+  stack specification and README requirements, benchmarks and limitations.
+- This release records a runtime model change; no feature set was completed.
+
+### Testing
+
+- `python -m core.benchmark`: server started in 2.6 s; llama-server 1119.1 MB,
+  Python 36.9 MB, peak 1161.0 MB (target 1300 MB); prefill 10.3 tok/s,
+  generation 8.1 tok/s; reply was coherent.
+- Voice-loaded check: Vosk small model, llama-server and Python together
+  measured 1288.8 MB, still below the 1300 MB target.
+- Full suite: **570 tests, OK**.
+- `python -m compileall -q core tools web config tests main.py` passed.
+- `git diff --check` passed.
+
 ## v0.2.10 — 2026-11-12
 
 **Feature set 4.14 Application Intelligence**

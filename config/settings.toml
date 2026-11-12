@@ -12,11 +12,13 @@ log_dir = "logs"
 [llama]
 # llama-server.exe from the existing llama.cpp installation (found on PATH).
 executable = "llama-server"
-model_path = "models/Llama-3.2-1B-Instruct-Q4_K_M.gguf"
+model_path = "models/granite-4.0-1b-Q4_K_M.gguf"
 host = "127.0.0.1"
 port = 8080
 # Starting values from the specification; benchmark before increasing.
 context_size = 2048
+# Quantized KV cache keeps the larger model inside the 1.3 GB target.
+kv_cache_type = "q8_0"
 threads = 2
 threads_batch = 2
 batch_size = 64

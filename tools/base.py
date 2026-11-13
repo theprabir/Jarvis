@@ -9,6 +9,7 @@ an exception from a tool.
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -104,6 +105,24 @@ class ToolRegistry:
 
   def __init__(self):
     self._tools = {}
+    self._observer = None
+
+  def set_observer(self, callback):
+    """Install an optional telemetry callback for completed tool calls."""
+    self._observer = callback
+
+  def _observe(self, name, arguments, result, started):
+    if self._observer is None:
+      return
+    try:
+      self._observer(
+          name,
+          arguments or {},
+          result,
+          round((time.perf_counter() - started) * 1000, 1),
+      )
+    except Exception:
+      log.debug("Tool observer failed", exc_info=True)
 
   def register(self, tool):
     if tool.name in self._tools:
@@ -122,31 +141,43 @@ class ToolRegistry:
 
   def execute(self, name, arguments=None):
     """Validate and run a tool; never raises for tool-level failures."""
+    started = time.perf_counter()
     tool = self.get(name)
     if tool is None:
-      return ToolResult(False, "I don't have a tool for that, sir.",
-                        error=f"unknown tool: {name}")
+      result = ToolResult(False, "I don't have a tool for that, sir.",
+                          error=f"unknown tool: {name}")
+      self._observe(name, arguments, result, started)
+      return result
     try:
       checked = tool.validate(arguments or {})
     except ToolError as exc:
       log.info("Tool %s rejected its arguments: %s", name, exc)
-      return ToolResult(False, f"I can't run that: {exc}.", error=str(exc))
+      result = ToolResult(False, f"I can't run that: {exc}.", error=str(exc))
+      self._observe(name, arguments, result, started)
+      return result
 
     try:
       result = tool.handler(**checked)
     except ToolError as exc:
       log.info("Tool %s failed: %s", name, exc)
-      return ToolResult(False, str(exc), error=str(exc))
+      result = ToolResult(False, str(exc), error=str(exc))
+      self._observe(name, arguments, result, started)
+      return result
     except Exception as exc:  # a tool bug must not end the session
       log.exception("Tool %s raised an unexpected error", name)
-      return ToolResult(
+      result = ToolResult(
           False, "That tool failed unexpectedly, sir.", error=repr(exc)
       )
+      self._observe(name, arguments, result, started)
+      return result
 
     if not isinstance(result, ToolResult):
       log.error("Tool %s returned %r", name, type(result).__name__)
-      return ToolResult(
+      result = ToolResult(
           False, "That tool returned an invalid result, sir.",
           error="invalid tool result",
       )
+      self._observe(name, arguments, result, started)
+      return result
+    self._observe(name, checked, result, started)
     return result

@@ -230,6 +230,33 @@ class ProactiveConfig:
 
 
 @dataclass(frozen=True)
+class ReliabilityConfig:
+  enabled: bool = True
+  # Requests, tool events, errors, modes, config snapshots and undo records.
+  db: str = "data/jarvis.db"
+  config_path: str = "config/settings.toml"
+  max_requests: int = 2_000
+  max_tool_events: int = 2_000
+  max_errors: int = 1_000
+  max_config_versions: int = 20
+  max_undo: int = 50
+  max_plugins: int = 32
+  offline: bool = False
+  privacy: bool = False
+  explain: bool = False
+
+  @property
+  def resolved_db(self) -> Path:
+    path = Path(self.db)
+    return path if path.is_absolute() else (PROJECT_ROOT / path).resolve()
+
+  @property
+  def resolved_config_path(self) -> Path:
+    path = Path(self.config_path)
+    return path if path.is_absolute() else (PROJECT_ROOT / path).resolve()
+
+
+@dataclass(frozen=True)
 class HabitsConfig:
   enabled: bool = True
   # Habits share the assistant database but use their own tables.
@@ -484,6 +511,7 @@ class Settings:
   notes: NotesConfig
   knowledge: KnowledgeConfig
   proactive: ProactiveConfig
+  reliability: ReliabilityConfig
   habits: HabitsConfig
   goals: GoalsConfig
   time: TimeConfig
@@ -727,6 +755,31 @@ def _validate(settings):
   _require(
       isinstance(proactive.enabled, bool),
       "[proactive] enabled must be true or false",
+  )
+
+  reliability = settings.reliability
+  _require(bool(reliability.db), "[reliability] db must not be empty")
+  _require(bool(reliability.config_path), "[reliability] config_path must not be empty")
+  for name in (
+      "max_requests",
+      "max_tool_events",
+      "max_errors",
+      "max_config_versions",
+      "max_undo",
+      "max_plugins",
+  ):
+    _require(
+        1 <= getattr(reliability, name) <= 100_000,
+        f"[reliability] {name} must be 1-100000",
+    )
+  for name in ("offline", "privacy", "explain"):
+    _require(
+        isinstance(getattr(reliability, name), bool),
+        f"[reliability] {name} must be true or false",
+    )
+  _require(
+      isinstance(reliability.enabled, bool),
+      "[reliability] enabled must be true or false",
   )
 
   habits = settings.habits
@@ -1114,6 +1167,9 @@ def load_settings(path=None):
       ),
       proactive=_build(
           ProactiveConfig, raw.get("proactive", {}), "proactive"
+      ),
+      reliability=_build(
+          ReliabilityConfig, raw.get("reliability", {}), "reliability"
       ),
       habits=_build(HabitsConfig, raw.get("habits", {}), "habits"),
       goals=_build(GoalsConfig, raw.get("goals", {}), "goals"),

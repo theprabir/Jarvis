@@ -7,6 +7,74 @@ all feature sets in a phase increments the middle number and resets the patch.
 feature sets in this level increment the patch (v0.2.1, …). **v0.3.0** begins
 the advanced line with feature set 4.15.
 
+## v0.3.5 — 2026-11-13
+
+**Feature set 4.20 Reliability and Self-Monitoring**
+
+### Implemented functionality
+
+- **Bounded local telemetry** — `core/reliability.py` records requests,
+  intents, selected roles, success/failure, latency, misunderstandings, tool
+  outcomes and automatic errors in the shared SQLite database. Old rows are
+  pruned to configured limits; no telemetry leaves the machine.
+- **Failed request tracking** — unexpected reply failures, model failure
+  replies and tool failures are recorded with their context and counted in
+  `/reliability status` and `/reliability errors`.
+- **Frequently misunderstood command tracking** — requests with no local
+  intent or a clarification response are grouped by text and shown in
+  `/reliability misunderstood`.
+- **Tool selection and failure monitoring** — every `ToolRegistry.execute`
+  call reports its name, argument-validity, result, duration and error to the
+  reliability service. `/reliability tools` shows call counts, success rates
+  and average latency, including unknown tools and validation failures.
+- **Task completion measurement and history** — `/reliability tasks` reports
+  task status counts, completed steps and step completion rate, followed by
+  recent task events from the existing durable task engine. `/tasks history`
+  remains available.
+- **Response latency** — each request records elapsed milliseconds; status
+  reports average and maximum latency.
+- **Memory usage monitoring** — status includes process RSS, virtual memory
+  and system memory percentage from a local psutil snapshot.
+- **Automatic error logging** — unexpected reply, learning and tool failures
+  are written to the existing rotating log and the bounded reliability error
+  table.
+- **Configuration versioning** — a baseline configuration snapshot is kept
+  automatically; `/reliability config save [LABEL]` adds versions and
+  `/reliability config list` shows ids, timestamps, labels, digests and sizes.
+- **Rollback support** — `/reliability config rollback ID confirm` validates
+  the saved TOML, snapshots the current configuration, then atomically restores
+  the selected version. Settings apply after restart; no automatic rollback or
+  destructive rewrite occurs without explicit confirmation.
+- **Controlled plugin registration** — a bounded in-process registry accepts
+  only explicitly coded callables with validated names, local/builtin sources
+  and `safe` or `confirm` permission. There is no dynamic import or plugin
+  execution path from user text.
+- **Capability discovery and awareness** — `/capabilities` and natural
+  requests such as `what can you do`, `show your capabilities` or
+  `what features do you have` report enabled local services and computer tools.
+  The same snapshot is available to reliability status and plugin diagnostics.
+- **Offline mode** — `/offline on|off|status` persistently suppresses web
+  search, research fetching and weather network access while local knowledge,
+  notes, tasks, files and deterministic commands continue to work.
+- **Privacy mode** — `/privacy on|off|status` stops conversation-history and
+  learned-memory writes, omits request text from telemetry, and suppresses
+  outbound web/weather access for the session.
+- **Explain mode** — `/explain on|off|status` appends a deterministic diagnostic
+  suffix to replies with the intent, selected role, handling location and
+  latency, without another model turn.
+- **Reversible-action undo** — `/undo` reverts the latest recorded inverse for
+  newly created folders and successful rename, copy or move operations, with
+  sandbox-path validation. Writes and deletes are deliberately not undone
+  because no safe original content is available.
+- **Controls** — `/reliability`, `/reliab`, `/capabilities`, `/offline`,
+  `/privacy`, `/explain`, `/undo` and `/revert`; `/help` and the README describe
+  the modes, configuration keys and limits.
+- Added `[reliability]` settings for enablement, database, configuration path,
+  retention limits, maximum plugin/undo records and mode defaults.
+- Bounded storage and deterministic checks keep the feature within the existing
+  local-first architecture; the full test suite and memory benchmark are run
+  before completion.
+
 ## v0.3.4 — 2026-11-13
 
 **Feature set 4.19 Proactive Intelligence**

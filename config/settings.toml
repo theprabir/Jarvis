@@ -207,6 +207,22 @@ high_disk_percent = 90.0
 high_memory_percent = 85.0
 high_cpu_percent = 90.0
 
+[reliability]
+# Local request/tool telemetry, modes, config snapshots and reversible actions.
+# All monitoring is bounded and stored in the shared assistant database.
+enabled = true
+db = "data/jarvis.db"
+config_path = "config/settings.toml"
+max_requests = 2000
+max_tool_events = 2000
+max_errors = 1000
+max_config_versions = 20
+max_undo = 50
+max_plugins = 32
+offline = false
+privacy = false
+explain = false
+
 [habits]
 # Daily habits with check-in streaks and optional recurring reminders.
 # Habits share the assistant database but use their own tables.

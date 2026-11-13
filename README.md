@@ -7,14 +7,16 @@ interface; deterministic Python modules do the audio, routing and tool work.
 
 **Current status:** Phase 1 (stabilization) and feature sets **4.1 Voice
 Interface** through **4.14 Application Intelligence** complete, plus optional
-document OCR with confidence warnings, currently **v0.3.4** in the
+document OCR with confidence warnings, currently **v0.3.5** in the
 advanced feature line. v0.2.11 switches the local model to IBM
 Granite 4.0 1B Instruct Q4_K_M; v0.2.12 keeps the prompt prefix stable so
 llama.cpp can reuse its cache across turns; v0.3.0 adds the constrained
 autonomous task agent; v0.3.1 adds specialized logical agent roles; v0.3.2
 adds local visual intelligence; v0.3.3 adds a personal knowledge base with
 flashcards and spaced review; v0.3.4 adds deterministic proactive briefings
-and alerts. Phase 4.14 adds active-window detection,
+and alerts; v0.3.5 adds bounded reliability telemetry, self-monitoring,
+capability discovery, offline/privacy/explain modes, configuration rollback
+and reversible-action undo. Phase 4.14 adds active-window detection,
 clipboard assistance, confirmed browser actions, page summaries, screenshot
 OCR and application documentation search.
 JARVIS listens through the
@@ -102,6 +104,7 @@ All runtime settings live in `config/settings.toml`:
 | `[notes]` | Local note database, content limits and search result limits |
 | `[knowledge]` | Knowledge database, item/text limits, search, quiz and plan sizes |
 | `[proactive]` | Briefing schedule, deadline/conflict windows, alert thresholds and digest sizes |
+| `[reliability]` | Telemetry/undo database, config snapshot path, retention limits and mode defaults |
 | `[habits]` | Daily habit database and habit-count limit |
 | `[goals]` | Goal database and goal-count limit |
 | `[time]` | Time-entry database and time-entry limit |
@@ -569,6 +572,64 @@ low_disk_free_gb = 5.0
 high_disk_percent = 90.0
 high_memory_percent = 85.0
 high_cpu_percent = 90.0
+```
+
+### Reliability and self-monitoring
+
+Reliability is local and bounded. Request, tool and error records live in the
+shared SQLite database, old rows are pruned to configured limits, and no
+telemetry is sent anywhere. Tool calls are observed centrally, so unknown
+tools, argument validation failures, handler errors and successful calls all
+contribute to the same statistics. Task completion comes from the existing
+durable task engine; response latency and process memory are sampled locally.
+
+| Capability | Behaviour |
+| --- | --- |
+| Status | `/reliability`, `/reliability status`; request, latency, tool, task, memory and mode summary |
+| Tool reliability | `/reliability tools`; call counts, success rates and average latency |
+| Errors | `/reliability errors`; bounded automatic error log |
+| Misunderstood requests | `/reliability misunderstood` |
+| Task completion/history | `/reliability tasks`; status counts, step rate and recent task events |
+| Capabilities | `/capabilities`, `what can you do`, `show your capabilities` |
+| Plugins | `/reliability plugins`; explicit in-process registrations only |
+| Save configuration | `/reliability config save [LABEL]` |
+| List versions | `/reliability config list` |
+| Roll back | `/reliability config rollback ID confirm`; restart to apply |
+| Offline mode | `/offline on\|off\|status` |
+| Privacy mode | `/privacy on\|off\|status` |
+| Explain mode | `/explain on\|off\|status` |
+| Undo | `/undo`, `/revert`; reverts the latest recorded reversible file action |
+
+A baseline configuration snapshot is saved automatically. Rollback validates
+the selected TOML, saves the current configuration first, and replaces the
+file atomically; it requires the explicit `confirm` word. Plugin registration
+is an API for locally coded callables with validated names, `local` or
+`builtin` sources and `safe` or `confirm` permission; JARVIS never dynamically
+imports plugins from user text. Undo is deliberately limited to newly created
+folders and successful rename, copy and move operations. Writes and deletes
+are not undone because no safe original content is available.
+
+Offline mode blocks web search, research retrieval and weather network calls
+while local knowledge, notes, tasks, files and deterministic responses keep
+working. Privacy mode also blocks outbound network access and skips
+conversation-history, learned-memory and request-text writes. Explain mode adds
+a short diagnostic suffix to replies showing the detected intent, role,
+handling location and latency without starting another model turn.
+
+```toml
+[reliability]
+enabled = true
+db = "data/jarvis.db"
+config_path = "config/settings.toml"
+max_requests = 2000
+max_tool_events = 2000
+max_errors = 1000
+max_config_versions = 20
+max_undo = 50
+max_plugins = 32
+offline = false
+privacy = false
+explain = false
 ```
 
 ### Habits

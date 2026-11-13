@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 import uuid
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -106,6 +107,7 @@ from core.knowledge import (
     format_item,
 )
 from core.proactive import ProactiveError, ProactiveService, ProactiveState
+from core.reliability import ReliabilityError, ReliabilityService
 from core.productivity import (
     ProductivityError,
     ProductivityService,
@@ -304,7 +306,11 @@ HELP_TEXT = (
     " and break phases, /clipboard searches bounded copy history, /summary"
     " builds daily or meeting summaries, /dev explains, searches, documents and"
     " inspects local projects, and /app explains the active application,"
-    " clipboard and browser context. /help lists this."
+    " clipboard and browser context. /reliability shows request, tool, error,"
+    " task, memory and latency status, config versions and reversible-action"
+    " undo; /capabilities lists what is available; /offline, /privacy and"
+    " /explain control reliability modes; /undo reverts the last reversible"
+    " file action. /help lists this."
 )
 
 DOCUMENTS_HELP = (
@@ -319,6 +325,22 @@ TODO_DISABLED = "Productivity is disabled, sir."
 NOTES_DISABLED = "Notes are disabled, sir."
 KNOWLEDGE_DISABLED = "The knowledge base is disabled, sir."
 PROACTIVE_DISABLED = "Proactive briefings are disabled, sir."
+RELIABILITY_DISABLED = "Reliability monitoring is disabled, sir."
+OFFLINE_REPLY = (
+    "Offline mode is on, sir. I can use local knowledge, notes, tasks and"
+    " files; web search and news are paused."
+)
+PRIVACY_REPLY = (
+    "Privacy mode is on, sir. I will not write conversation history, learned"
+    " memories or request text to disk."
+)
+RELIABILITY_HELP = (
+    "Reliability commands: status, tools, errors, misunderstood, tasks,"
+    " capabilities, plugins, config list, config save [LABEL],"
+    " config rollback ID confirm, offline on|off, privacy on|off,"
+    " explain on|off, undo. Modes can also be changed with /offline,"
+    " /privacy, /explain and reverted with /undo."
+)
 HABITS_DISABLED = "Habit tracking is disabled, sir."
 GOALS_DISABLED = "Goal tracking is disabled, sir."
 TIME_DISABLED = "Time tracking is disabled, sir."
@@ -499,6 +521,7 @@ class Assistant:
     self._knowledge = None
     self._proactive = None
     self._briefing_timer = None
+    self._reliability = None
     self._habits = None
     self._goals = None
     self._time_tracking = None
@@ -539,12 +562,15 @@ class Assistant:
         if settings.tools.enabled
         else None
     )
+    if self.registry is not None:
+      self.registry.set_observer(self._record_tool_event)
     self.router = IntentRouter(
         allowed_apps=settings.tools.allowed_apps,
         allowed_commands=settings.tools.allowed_commands,
     )
     self.roles = RoleRouter()
     self._last_role = "main"
+    self._last_intent = ""
     self._store = None
     if self._config.enabled:
       try:
@@ -569,17 +595,78 @@ class Assistant:
     return self._session_id
 
   def reply(self, text):
-    """Answer one user message and learn from the exchange afterwards."""
-    answer = self._reply(text)
-    self._learn(text, answer)
+    """Answer one user message, learn from it and record bounded telemetry."""
+    started = time.perf_counter()
+    text = text or ""
+    privacy = self._reliability_mode("privacy")
+    status = "ok"
+    error = ""
+    try:
+      answer = self._reply(text)
+    except Exception as exc:
+      log.exception("Unexpected reply failure")
+      answer = "I hit an internal error, sir. The details were logged."
+      status = "error"
+      error = repr(exc)
+      service = self._get_reliability()
+      if service is not None:
+        try:
+          service.record_error("reply", repr(exc))
+        except ReliabilityError:
+          log.debug("Could not record reply failure", exc_info=True)
+
+    if not privacy:
+      try:
+        self._learn(text, answer)
+      except Exception as exc:
+        log.exception("Could not learn from the exchange")
+        service = self._get_reliability()
+        if service is not None:
+          try:
+            service.record_error("learning", repr(exc))
+          except ReliabilityError:
+            log.debug("Could not record learning failure", exc_info=True)
+
+    latency_ms = round((time.perf_counter() - started) * 1000)
+    if answer in FAILURE_REPLIES.values():
+      status = "error"
+      error = error or answer
+    misunderstood = bool(
+        answer == CLARIFY_REPLY
+        or (not self._last_intent and not text.strip().startswith("/"))
+    )
+    service = self._get_reliability()
+    if service is not None:
+      try:
+        service.record_request(
+            "" if privacy else text,
+            intent=self._last_intent,
+            role=self._last_role,
+            status=status,
+            latency_ms=latency_ms,
+            error=error,
+            misunderstood=misunderstood,
+        )
+      except ReliabilityError:
+        log.debug("Could not record request telemetry", exc_info=True)
+
+    if self._reliability_mode("explain") and not text.strip().startswith("/"):
+      location = "local" if self._last_intent else "model"
+      answer += (
+          f"\n\n[explain] intent={self._last_intent or 'none'}; "
+          f"role={self._last_role}; handled={location}; "
+          f"latency={latency_ms}ms"
+      )
     return answer
 
   def _reply(self, text, forced_role=None):
     """Answer one user message (typed or transcribed) with context."""
     text = (text or "").strip()
+    self._last_intent = ""
     if not text:
       return "I didn't catch that, sir."
     if text.startswith("/"):
+      self._last_intent = "command"
       return self._command(text)
     if (
         self._pending_tool is not None
@@ -588,6 +675,7 @@ class Assistant:
     ):
       answer = self._confirmation_reply(text)
       if answer is not None:
+        self._last_intent = "confirmation"
         return answer
       # Any other request abandons the pending action instead of surprising
       # the user later.
@@ -607,6 +695,7 @@ class Assistant:
       )
       if plan is not None:
         self._last_role = forced_role.name if forced_role else "file"
+        self._last_intent = "file_plan"
         return self._propose_plan(plan, text)
 
     # Deterministic intents come first: short questions like "what time is it?"
@@ -625,6 +714,7 @@ class Assistant:
         selection.explicit,
     )
     if self.router.is_confident(intent):
+      self._last_intent = intent.name
       if intent.name == "web_search":
         return self._answer_web(
             intent.entities.get("query", ""),
@@ -671,7 +761,7 @@ class Assistant:
     messages.append({"role": "user", "content": text})
     answer, ok = self._complete(messages, conversation.max_tokens())
 
-    if ok and self._config.enabled:
+    if ok and self._config.enabled and not self._reliability_mode("privacy"):
       conversation.add(text, answer)
       self._record(text, answer)
     return answer
@@ -773,6 +863,9 @@ class Assistant:
     if self._proactive is not None:
       self._proactive.close()
       self._proactive = None
+    if self._reliability is not None:
+      self._reliability.close()
+      self._reliability = None
     self._briefing_timer = None
     if self._habits is not None:
       self._habits.close()
@@ -827,6 +920,8 @@ class Assistant:
 
   def _get_weather(self):
     """Build the weather client on first use so chatting stays light."""
+    if self._reliability_mode("offline") or self._reliability_mode("privacy"):
+      return None
     if self._weather is None and self._settings.weather.enabled:
       try:
         from core.weather import WeatherClient
@@ -912,6 +1007,81 @@ class Assistant:
         log.error("Proactive briefings unavailable: %s", exc)
         return None
     return self._proactive
+
+  def _get_reliability(self):
+    """Build bounded local telemetry and reliability controls lazily."""
+    if not self._settings.reliability.enabled:
+      return None
+    if self._reliability is None:
+      try:
+        self._reliability = ReliabilityService(
+            self._settings.reliability,
+            tools_config=self._settings.tools,
+            task_provider=self._get_tasks,
+            capabilities=self._capabilities_snapshot,
+        )
+        self._reliability.ensure_baseline()
+      except ReliabilityError as exc:
+        log.error("Reliability service unavailable: %s", exc)
+        return None
+    return self._reliability
+
+  def _reliability_mode(self, name):
+    service = self._get_reliability()
+    if service is not None:
+      try:
+        return service.mode(name)
+      except ReliabilityError:
+        pass
+    return bool(getattr(self._settings.reliability, name, False))
+
+  def _record_tool_event(self, name, arguments, result, duration_ms):
+    service = self._get_reliability()
+    if service is None:
+      return
+    try:
+      service.record_tool(name, result.ok, duration_ms, result.error)
+      if result.ok:
+        service.record_undo(name, arguments, result)
+      else:
+        service.record_error(f"tool:{name}", result.error or "tool failed")
+    except ReliabilityError as exc:
+      log.debug("Tool telemetry unavailable: %s", exc)
+
+  def _capabilities_snapshot(self):
+    """Describe enabled capabilities without starting any service."""
+    settings = self._settings
+    groups = {
+        "assistant": [
+            ("voice", settings.voice.enabled, "push-to-talk and offline speech"),
+            ("conversation", settings.conversation.enabled, "history and context"),
+            ("memory", settings.memory.enabled, "saved facts and episodes"),
+            ("tools", settings.tools.enabled, "validated computer actions"),
+            ("tasks", settings.tasks.enabled, "durable task plans"),
+        ],
+        "knowledge": [
+            ("documents", settings.documents.enabled, "document search and OCR"),
+            ("knowledge", settings.knowledge.enabled, "notes, flashcards and review"),
+            ("notes", settings.notes.enabled, "local notes and full-text search"),
+            ("vision", settings.documents.enabled, "local image analysis"),
+            ("web", settings.web.enabled, "web search and research"),
+        ],
+        "productivity": [
+            ("productivity", settings.productivity.enabled, "to-dos and planning"),
+            ("habits", settings.habits.enabled, "daily habits and streaks"),
+            ("goals", settings.goals.enabled, "goal progress"),
+            ("calendar", settings.calendar.enabled, "local events and agendas"),
+            ("email", settings.email.enabled, "local drafts and mail"),
+            ("clipboard", settings.clipboard.enabled, "bounded clipboard history"),
+        ],
+        "intelligence": [
+            ("roles", True, "specialist prompt routing"),
+            ("proactive", settings.proactive.enabled, "briefings and alerts"),
+            ("reliability", settings.reliability.enabled, "telemetry and controls"),
+        ],
+    }
+    tools = list(self.registry.names()) if self.registry is not None else []
+    return {"groups": groups, "tools": tools}
 
   def _get_system_snapshot(self):
     """Return local system metrics for deterministic performance alerts."""
@@ -1145,6 +1315,8 @@ class Assistant:
 
   def _get_searcher(self):
     """Build the searcher on first use so text-only sessions stay light."""
+    if self._reliability_mode("offline") or self._reliability_mode("privacy"):
+      return None
     if self._searcher is None and self._settings.web.enabled:
       try:
         from web.search import Searcher
@@ -1173,6 +1345,8 @@ class Assistant:
     query = " ".join((query or "").split())
     if not query:
       return "What should I search the web for, sir?"
+    if self._reliability_mode("offline") or self._reliability_mode("privacy"):
+      return OFFLINE_REPLY
     searcher = self._get_searcher()
     if searcher is None:
       return WEB_DISABLED
@@ -2029,6 +2203,8 @@ class Assistant:
   # -- deterministic intents -------------------------------------------
 
   def _answer_intent(self, intent, user_text=None):
+    if intent.name == "capabilities":
+      return self._capabilities_text()
     if intent.name == "vision":
       return self._vision_intent(intent)
     if intent.name == "knowledge":
@@ -5050,7 +5226,7 @@ class Assistant:
     )
 
   def _remember(self, user_message, answer):
-    if not self._config.enabled:
+    if not self._config.enabled or self._reliability_mode("privacy"):
       return
     self.conversation.add(user_message, answer)
     self._record(user_message, answer)
@@ -5272,9 +5448,217 @@ class Assistant:
       return self._documents_command(text)
     if command == "/forget":
       return self._forget(argument)
+    if command in {"/reliability", "/reliab"}:
+      return self._reliability_command(text)
+    if command in {"/capabilities", "/capability"}:
+      return self._capabilities_text()
+    if command in {"/offline", "/privacy", "/explain"}:
+      return self._mode_command(command.lstrip("/"), argument)
+    if command in {"/undo", "/revert"}:
+      return self._undo_action()
     if command == "/help":
       return HELP_TEXT
     return f"Unknown command {command}. Try /help."
+
+  def _reliability_command(self, text):
+    service = self._get_reliability()
+    if service is None:
+      return RELIABILITY_DISABLED
+    parts = text.split(maxsplit=1)
+    body = parts[1].strip() if len(parts) > 1 else ""
+    if not body or body.lower() in {"help", "?"}:
+      return RELIABILITY_HELP
+    action, _separator, rest = body.partition(" ")
+    action = action.lower()
+    rest = rest.strip()
+    try:
+      if action in {"status", "stats"}:
+        stats = service.stats()
+        requests = stats["requests"]
+        tools = stats["tools"]
+        tasks = stats["tasks"]
+        memory = stats["memory"]
+        modes = service.modes()
+        lines = [
+            "Reliability status:",
+            f"- requests: {requests['total']} total, {requests['success']} ok,"
+            f" {requests['failed']} failed, {requests['misunderstood']} misunderstood",
+            f"- latency: average {requests['average_latency_ms']} ms,"
+            f" maximum {requests['max_latency_ms']} ms",
+            f"- tools: {len(tools)} names, {stats['tool_failures']} failures",
+            f"- tasks: {tasks.get('total', 0)} tracked,"
+            f" {tasks.get('step_rate', 0.0)}% steps complete",
+            f"- memory: {memory.get('rss_mb', 0)} MB RSS",
+            "- modes: " + ", ".join(
+                f"{name}={'on' if enabled else 'off'}"
+                for name, enabled in modes.items()
+            ),
+        ]
+        if stats["misunderstood"]:
+          top = stats["misunderstood"][0]
+          lines.append(
+              f"- most misunderstood: {top['text']!r} ({top['count']} times)"
+          )
+        return "\n".join(lines)
+      if action in {"tools", "tool"}:
+        rows = service.stats()["tools"]
+        if not rows:
+          return "No tool calls have been recorded yet, sir."
+        lines = ["Tool reliability:"]
+        for row in rows[:20]:
+          lines.append(
+              f"- {row['name']}: {row['total']} calls, {row['success_rate']}% ok,"
+              f" {row['average_latency_ms']} ms average"
+          )
+        return "\n".join(lines)
+      if action in {"errors", "error"}:
+        rows = service.stats()["errors"]
+        if not rows:
+          return "No automatic errors have been recorded, sir."
+        return "Recent errors:\n" + "\n".join(
+            f"- {row['created_at']} [{row['context']}] {row['message'][:180]}"
+            for row in rows
+        )
+      if action in {"misunderstood", "misses"}:
+        rows = service.stats()["misunderstood"]
+        if not rows:
+          return "No frequently misunderstood commands have been recorded, sir."
+        return "Frequently misunderstood commands:\n" + "\n".join(
+            f"- {row['text']!r}: {row['count']}" for row in rows
+        )
+      if action in {"tasks", "history"}:
+        summary = service.task_summary()
+        if not summary:
+          return "No task history is available, sir."
+        statuses = ", ".join(
+            f"{name}={count}" for name, count in sorted(summary["statuses"].items())
+        ) or "none"
+        lines = [
+            f"Task completion: {summary['completed_steps']}/"
+            f"{summary['total_steps']} steps complete"
+            f" ({summary['step_rate']}%). Statuses: {statuses}."
+        ]
+        history = service.task_history(5)
+        if history:
+          lines.append("Recent task events:")
+          for row in history:
+            lines.append(
+                f"- {row.get('created_at', '')} task {row.get('task_id', '')}"
+                f" {row.get('kind', '')}: {row.get('detail', '')}"
+            )
+        return "\n".join(lines)
+      if action in {"capabilities", "capability"}:
+        return self._capabilities_text()
+      if action in {"plugins", "plugin"}:
+        plugins = service.plugins()
+        if not plugins:
+          return "No controlled plugins are registered, sir."
+        return "Registered plugins:\n" + "\n".join(
+            f"- {plugin.name} ({plugin.permission}): {plugin.description}"
+            for plugin in plugins
+        )
+      if action == "config":
+        return self._config_version_command(service, rest)
+      if action in {"offline", "privacy", "explain"}:
+        return self._mode_command(action, rest)
+      if action in {"undo", "revert"}:
+        return self._undo_action()
+    except ReliabilityError as exc:
+      return f"I couldn't complete that reliability action, sir: {exc}."
+    return RELIABILITY_HELP
+
+  def _config_version_command(self, service, rest):
+    action, _separator, value = rest.partition(" ")
+    action = action.lower().strip()
+    value = value.strip()
+    if action in {"save", "snapshot"}:
+      result = service.snapshot_config(label=value or "manual")
+      return (
+          f"Configuration version #{result['id']} saved"
+          f" ({result['digest'][:10]}), sir."
+      )
+    if action in {"list", "versions", "show"}:
+      rows = service.config_versions(20)
+      if not rows:
+        return "No configuration versions have been saved, sir."
+      return "Configuration versions:\n" + "\n".join(
+          f"- #{row['id']} {row['created_at']} {row['label'] or 'unlabelled'}"
+          f" ({row['digest'][:10]}, {row['length(content)']} bytes)"
+          for row in rows
+      )
+    if action in {"rollback", "restore"}:
+      pieces = value.split()
+      if not pieces or not pieces[0].isdigit():
+        return "Usage: /reliability config rollback ID confirm"
+      if "confirm" not in [piece.lower() for piece in pieces[1:]]:
+        return (
+            f"Rolling back to configuration #{pieces[0]} changes settings."
+            " Run the command again with confirm to proceed."
+        )
+      version = service.rollback_config(int(pieces[0]), confirm=True)
+      return (
+          f"Restored configuration version #{version['id']}."
+          " Restart the assistant to apply it, sir."
+      )
+    return RELIABILITY_HELP
+
+  def _mode_command(self, name, argument):
+    service = self._get_reliability()
+    current = self._reliability_mode(name)
+    argument = (argument or "").strip().lower()
+    if argument in {"on", "enable", "enabled", "true"}:
+      enabled = True
+    elif argument in {"off", "disable", "disabled", "false"}:
+      enabled = False
+    elif argument in {"toggle"}:
+      enabled = not current
+    elif not argument or argument in {"status", "?"}:
+      return (
+          f"{name.capitalize()} mode is {'on' if current else 'off'}, sir."
+          + (" " + (PRIVACY_REPLY if name == "privacy" else OFFLINE_REPLY)
+             if current and name in {"privacy", "offline"} else "")
+      )
+    else:
+      return f"Usage: /{name} on|off|status"
+    if service is None:
+      return RELIABILITY_DISABLED
+    try:
+      service.set_mode(name, enabled)
+    except ReliabilityError as exc:
+      return f"I couldn't change {name} mode, sir: {exc}."
+    if name == "privacy" and enabled:
+      return PRIVACY_REPLY
+    if name == "offline" and enabled:
+      return OFFLINE_REPLY
+    return f"{name.capitalize()} mode is now {'on' if enabled else 'off'}, sir."
+
+  def _undo_action(self):
+    service = self._get_reliability()
+    if service is None:
+      return RELIABILITY_DISABLED
+    try:
+      description = service.undo_last()
+      return f"Undone: {description}, sir."
+    except ReliabilityError as exc:
+      return f"I couldn't undo that, sir: {exc}."
+
+  def _capabilities_text(self):
+    snapshot = self._capabilities_snapshot()
+    groups = snapshot.get("groups", {})
+    lines = ["I can use these capabilities, sir:"]
+    for group, entries in groups.items():
+      enabled = [name for name, active, _detail in entries if active]
+      if enabled:
+        lines.append(f"- {group}: " + ", ".join(enabled))
+    tools = snapshot.get("tools", [])
+    if tools:
+      lines.append("- computer tools: " + ", ".join(tools))
+    modes = self._settings.reliability
+    lines.append(
+        "- controls: offline, privacy and explain modes"
+        f" (defaults {int(modes.offline)}/{int(modes.privacy)}/{int(modes.explain)})"
+    )
+    return "\n".join(lines)
 
   def _roles_command(self, parts):
     """List roles, describe one, or force one for a single request."""

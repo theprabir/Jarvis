@@ -84,6 +84,7 @@ CONVERSATION_INTENTS = frozenset(
         "date",
         "math",
         "conversation",
+        "capabilities",
         "help",
         "new",
         "mode",
@@ -252,6 +253,15 @@ COMMANDS = frozenset(
         "application",
         "todo",
         "todos",
+        "reliability",
+        "reliab",
+        "capabilities",
+        "capability",
+        "offline",
+        "privacy",
+        "explain",
+        "undo",
+        "revert",
         "documents",
         "docs",
     }
@@ -2156,6 +2166,25 @@ _PROACTIVE_ALERTS = re.compile(
 )
 
 
+_CAPABILITIES = re.compile(
+    r"^(?:what\s+can\s+(?:you|jarvis)\s+do"
+    r"|what\s+are\s+your\s+capabilities"
+    r"|what\s+are\s+you\s+able\s+to\s+do"
+    r"|(?:show|list|describe)(?:\s+me)?(?:\s+your)?\s+capabilities"
+    r"|what\s+features\s+do\s+you\s+have"
+    r"|help\s+me\s+understand\s+what\s+you\s+can\s+do)$",
+    re.I,
+)
+
+
+def recognize_capabilities(text):
+  """Recognize bounded capability-discovery requests."""
+  source = (text or "").strip().rstrip("?.!")
+  if source and _CAPABILITIES.match(source):
+    return Intent("capabilities", 0.94)
+  return None
+
+
 def recognize_proactive(text):
   """Recognize bounded briefing and proactive-check requests."""
   source = (text or "").strip().rstrip("?.!")
@@ -2906,6 +2935,9 @@ class IntentRouter:
         return Intent(name=name, confidence=1.0)
       return None
 
+    intent = recognize_capabilities(text)
+    if intent is not None:
+      return intent
     intent = recognize_proactive(text)
     if intent is not None:
       return intent

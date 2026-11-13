@@ -7,10 +7,11 @@ interface; deterministic Python modules do the audio, routing and tool work.
 
 **Current status:** Phase 1 (stabilization) and feature sets **4.1 Voice
 Interface** through **4.14 Application Intelligence** complete, plus optional
-document OCR with confidence warnings, currently **v0.2.12** in the
-moderate-advanced feature line. v0.2.11 switches the local model to IBM
+document OCR with confidence warnings, currently **v0.3.0** in the
+advanced feature line. v0.2.11 switches the local model to IBM
 Granite 4.0 1B Instruct Q4_K_M; v0.2.12 keeps the prompt prefix stable so
-llama.cpp can reuse its cache across turns. Phase 4.14 adds active-window detection,
+llama.cpp can reuse its cache across turns; v0.3.0 adds the constrained
+autonomous task agent. Phase 4.14 adds active-window detection,
 clipboard assistance, confirmed browser actions, page summaries, screenshot
 OCR and application documentation search.
 JARVIS listens through the
@@ -233,16 +234,27 @@ folders, asks for approval, moves the files, verifies each destination and
 reports the result. Add `in the background` to run the approved plan without
 blocking the conversation.
 
+The **autonomous task agent** interprets a supported high-level goal and
+selects validated tools for it. It understands system checks, folder
+inventories, file searches, folder creation, explicit file actions and folder
+organization. Goals joined by `then` run as dependent stages. For example,
+`as an agent, check my system then take inventory of Downloads` creates one
+durable plan with system and process checks followed by a folder inventory.
+The agent is deliberately constrained: it never invents commands, executes
+Python or bypasses the tool sandbox, and unsupported goals are rejected with
+examples.
+
 | Capability | Behaviour |
 | --- | --- |
-| Planning | The organizer decomposes a folder into inspect, create-folder, move and verify steps |
+| Planning | The organizer decomposes a folder into inspect, create-folder, move and verify steps; the goal agent plans checks, inventories, searches, folder creation and compound stages |
 | Dependencies | A step waits until every prerequisite has completed; skipped or failed prerequisites skip their dependants |
 | Conditions | A step can run only when an earlier result matches a field comparison, such as a non-empty folder |
 | Execution | Steps run sequentially by default; independent lightweight steps marked parallel use the configured workers |
 | Approval | Destructive plans wait for `/confirm`; a step can also require its own approval checkpoint |
 | Checkpoints | Task and step state is saved to SQLite after every change, with a visible current step and progress count |
 | Retries | A step can retry a configurable number of times before it fails the task |
-| Replanning | A failed move is retried with a collision-safe name; custom engines can install a replanner for other recovery |
+| Diagnosis | A failed step is classified and the diagnosis is written to the task history |
+| Replanning | A failed move, copy or rename is retried with a collision-safe name; existing folders are treated as already satisfied; custom engines can install a replanner |
 | Cancellation | `/tasks cancel ID` stops at the next checkpoint; pending approvals can be cancelled with `/cancel` |
 | Resumption | Interrupted or failed tasks resume from completed steps with `/tasks resume ID` |
 | Verification | A verify step lists the destination and requires every expected file name to be present |
@@ -252,6 +264,9 @@ blocking the conversation.
 | Control | How |
 | --- | --- |
 | Plan | `organize my downloads folder`, `organize my downloads folder in the background`, `organize C:/temp/inbox` |
+| Agent goal | `as an agent, check my system`, `as an agent, take inventory of Downloads`, `as an agent, find report.pdf in Downloads` |
+| Compound agent goal | `as an agent, check my system then take inventory of Downloads` |
+| Agent command | `/tasks agent GOAL`, `/tasks plan GOAL` |
 | Durable file plan | `as a task, create a folder named drafts and in that folder write hello to file notes.txt`, `/tasks plan ...` |
 | List | `/tasks`, `list tasks`, `what tasks are running`, `task status` |
 | Detail | `/tasks show ID`, `show task ID` |
@@ -1061,6 +1076,7 @@ core/logger.py          Console + rotating file logging
 core/server_manager.py  llama-server lifecycle and readiness
 core/brain.py           Single-shot prompt -> spoken-safe reply
 core/assistant.py       Conversation-aware replies, modes, history, commands
+core/agent.py           Constrained goal interpretation and task planning
 core/conversation.py    Turns, compression summary and answer modes
 core/history.py         SQLite conversation history
 core/intents.py         Deterministic intent routing and JSON validation

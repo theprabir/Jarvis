@@ -174,11 +174,16 @@ def _unique_name(name, taken):
 
 
 def _collision_target(target, task_id, attempt):
-  """A deterministic alternate name for a failed move."""
-  directory, name = target.replace("\\", "/").rsplit("/", 1)
+  """A deterministic alternate name for a failed move or copy."""
+  normalized = target.replace("\\", "/")
+  if "/" in normalized:
+    directory, name = normalized.rsplit("/", 1)
+  else:
+    directory, name = "", normalized
   stem, extension = os.path.splitext(name)
   suffix = f"task {task_id}" if attempt <= 1 else f"task {task_id}-{attempt}"
-  return f"{directory}/{stem} ({suffix}){extension}"
+  candidate = f"{stem} ({suffix}){extension}"
+  return f"{directory}/{candidate}" if directory else candidate
 
 
 @dataclass
@@ -973,7 +978,12 @@ class TaskEngine:
           task.id, "done", f"Completed {step.key}: {outcome['text']}"
       )
       return task
-    recovered = self._recover_failure(step)
+    error = outcome["error"]
+    diagnosis = self._diagnose_failure(step, error)
+    self._store.add_event(
+        task.id, "diagnosed", f"{step.key}: {diagnosis} ({error})"
+    )
+    recovered = self._recover_failure(step, error)
     if recovered:
       self._complete_step(
           step,
@@ -989,10 +999,10 @@ class TaskEngine:
           task.id, "recovered", f"Recovered {step.key}: {recovered}"
       )
       return task
-    if self._replan_step(task, step, outcome["error"]):
+    if self._replan_step(task, step, error, diagnosis):
       self._store.save(task)
       return task
-    return self._fail_task(task, step, outcome["error"])
+    return self._fail_task(task, step, error)
 
   def _run_parallel(self, task, ready, event, workers):
     for step in ready:
@@ -1032,7 +1042,13 @@ class TaskEngine:
     for step in ready:
       outcome = outcomes[step.key]
       task.current_step = ""
-      recovered = self._recover_failure(step)
+      error = outcome["error"]
+      diagnosis = self._diagnose_failure(step, error)
+      if not outcome["ok"]:
+        self._store.add_event(
+            task.id, "diagnosed", f"{step.key}: {diagnosis} ({error})"
+        )
+      recovered = self._recover_failure(step, error)
       if outcome["ok"]:
         self._complete_step(step, outcome)
         self._store.add_event(
@@ -1052,13 +1068,13 @@ class TaskEngine:
             "recovered",
             f"Recovered {step.key}: {recovered}",
         )
-      elif self._replan_step(task, step, outcome["error"]):
+      elif self._replan_step(task, step, error, diagnosis):
         pass
       else:
         step.status = FAILED
-        step.error = outcome["error"]
+        step.error = error
         step.finished_at = _now()
-        failed.append((step, outcome["error"]))
+        failed.append((step, error))
     self._store.save(task)
     if failed:
       step, error = failed[0]
@@ -1195,10 +1211,35 @@ class TaskEngine:
     return False
 
   @staticmethod
-  def _recover_failure(step):
+  def _diagnose_failure(step, error):
+    """Classify a failed step before choosing a recovery strategy."""
+    text = str(error or "").lower()
+    if "already exists" in text:
+      return (
+          "already_satisfied"
+          if step.tool == "create_folder"
+          else "name_collision"
+      )
+    if "outside the allowed folder" in text:
+      return "sandbox_refusal"
+    if "does not exist" in text or "not found" in text:
+      return "missing_source"
+    if "timed out" in text or "timeout" in text:
+      return "timeout"
+    if "access is denied" in text or "permission" in text:
+      return "permission"
+    if "verification failed" in text:
+      return "verification_failed"
+    return "tool_failure"
+
+  @staticmethod
+  def _recover_failure(step, error=""):
     """Recognize an effect that was already achieved by an earlier attempt."""
+    text = str(error or "").lower()
     try:
       if step.tool == "create_folder":
+        if "already exists" in text:
+          return "Folder already existed."
         path = Path(str(step.arguments.get("path") or ""))
         if path.is_absolute() and path.is_dir():
           return "Folder already existed."
@@ -1224,7 +1265,7 @@ class TaskEngine:
     step.error = ""
     step.finished_at = _now()
 
-  def _replan_step(self, task, step, error):
+  def _replan_step(self, task, step, error, diagnosis=""):
     if step.replans >= 2:
       return False
     if self._replanner is not None:
@@ -1245,7 +1286,9 @@ class TaskEngine:
             f"Replanned {step.key} after: {error}",
         )
         return True
-    if task.kind == "organize" and step.tool == "move_path":
+    if diagnosis == "name_collision" and step.tool in {
+        "move_path", "copy_path", "rename_path"
+    }:
       old_target = str(step.arguments.get("target") or "")
       if not old_target:
         return False

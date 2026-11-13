@@ -476,6 +476,70 @@ class EngineTests(unittest.TestCase):
         2,
     )
 
+  def test_existing_folder_is_recovered_from_the_error(self):
+    self.add_tool(
+        "create_folder",
+        lambda path: ToolResult(False, "drafts already exists"),
+        {"path": str},
+    )
+    engine = self.make_engine()
+    task = engine.create(
+        "ensure folder",
+        [
+            TaskStep(
+                "folder",
+                "Ensure folder",
+                "create_folder",
+                {"path": "drafts"},
+            )
+        ],
+        approval_required=False,
+    )
+    result = engine.run(task.id)
+    self.assertEqual(result.status, COMPLETED)
+    self.assertIn(
+        "diagnosed", [event["kind"] for event in engine.events(task.id)]
+    )
+    self.assertIn(
+        "recovered", [event["kind"] for event in engine.events(task.id)]
+    )
+
+  def test_copy_collision_replans_to_a_unique_target(self):
+    targets = []
+
+    def copy(source, target):
+      targets.append(target)
+      if len(targets) == 1:
+        return ToolResult(False, "target already exists")
+      return ToolResult(True, "copied", {"path": target})
+
+    self.add_tool(
+        "copy_path",
+        copy,
+        {"source": str, "target": str},
+    )
+    engine = self.make_engine()
+    task = engine.create(
+        "copy with collision",
+        [
+            TaskStep(
+                "copy",
+                "Copy notes",
+                "copy_path",
+                {"source": "notes.txt", "target": "dest/notes.txt"},
+            )
+        ],
+        approval_required=False,
+    )
+    expected = f"dest/notes (task {task.id}).txt"
+    result = engine.run(task.id)
+    self.assertEqual(result.status, COMPLETED)
+    self.assertEqual(targets, ["dest/notes.txt", expected])
+    self.assertEqual(result.step("copy").arguments["target"], expected)
+    kinds = [event["kind"] for event in engine.events(task.id)]
+    self.assertIn("diagnosed", kinds)
+    self.assertIn("replanned", kinds)
+
   def test_dependency_cycle_is_rejected(self):
     engine = self.make_engine()
     with self.assertRaises(TaskError):

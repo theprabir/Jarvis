@@ -1771,7 +1771,8 @@ _TASK_BACKGROUND = re.compile(
     r"\s+in\s+(?:the\s+)?background\b", re.I
 )
 _TASK_PLAN = re.compile(
-    r"^(?:as a task|plan a task(?: to)?|task:)\s*,?\s*(?P<request>.+)$",
+    r"^(?:as a task|as an agent|plan a task(?: to)?|task:|autonomously)"
+    r"\s*,?\s*(?P<request>.+)$",
     re.I,
 )
 _TASK_LIST = (

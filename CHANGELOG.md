@@ -4,8 +4,66 @@ All notable changes to JARVIS are recorded here. Versions follow the project
 convention: each completed feature set increments the patch number; completing
 all feature sets in a phase increments the middle number and resets the patch.
 **v0.2.0** begins the moderate-advanced line at the user's request; subsequent
-feature sets in this level increment the patch (v0.2.1, …), and completing the
-level increments the middle number.
+feature sets in this level increment the patch (v0.2.1, …). **v0.3.0** begins
+the advanced line with feature set 4.15.
+
+## v0.3.0 — 2026-11-13
+
+**Feature set 4.15 Autonomous Task Agent (advanced line begins)**
+
+### Implemented functionality
+
+- **Goal interpretation** — `core/agent.py` turns supported high-level goals
+  into durable task plans. It recognizes system checks, folder inventories,
+  file searches, folder creation, existing file-action plans and folder
+  organization.
+- **Multi-stage goals** — goals joined by `then` are chained with explicit
+  dependencies, so the second stage starts only after every terminal step of
+  the first stage completes.
+- **Constrained tool selection** — the agent chooses only tools already in the
+  validated registry and never generates shell commands or Python. Unsupported
+  goals are rejected with examples instead of being guessed.
+- **Failure diagnosis** — failed steps are classified as already satisfied,
+  name collisions, missing sources, sandbox refusals, timeouts, permission
+  failures, verification failures or general tool failures, and the diagnosis
+  is persisted in `task_events`.
+- **Alternative strategies** — an existing destination is treated as recovered
+  for an idempotent folder creation; destination collisions for move, copy and
+  rename steps are retried at a deterministic unique target, with verification
+  names updated.
+- **Completion summaries** — agent tasks carry a human-readable summary used by
+  `/tasks show` and completion reports, while the existing organizer report is
+  preserved.
+- **Controls** — `as an agent, ...`, `autonomously ...`, `as a task, ...`,
+  `/tasks plan ...` and `/tasks agent ...`; `then` composes stages.
+- **Persistent execution** — agent plans reuse the existing SQLite
+  checkpoints, approvals, background execution, retries, cancellation,
+  resumption, verification and history.
+- Updated `README.md` with supported goals, controls and the determinism
+  limitation.
+
+### Files
+
+- `core/agent.py` — constrained `GoalAgent` and `AgentPlan`.
+- `core/assistant.py` — agent fallback for `/tasks plan`, `/tasks agent`,
+  `as an agent` routing and completion summaries.
+- `core/intents.py` — `as an agent` and `autonomously` task-plan triggers.
+- `core/tasks.py` — failure diagnosis, idempotent folder recovery, collision
+  replanning for move/copy/rename and safe relative collision names.
+- `tests/test_agent.py` — goal families, compound stages, assistant controls
+  and unsupported-goal handling.
+- `tests/test_tasks.py` — diagnosis and copy-collision recovery tests.
+
+### Testing
+
+- Full suite: **588 tests, OK**.
+- `python -m compileall -q core tools web config tests main.py` passed.
+- `git diff --check` passed.
+- `python -m core.benchmark`: server started in 6.3 s; llama-server 1117.0 MB,
+  Python 35.3 MB, peak 1157.2 MB (target 1300 MB); prefill 11.8 tok/s,
+  generation 8.1 tok/s.
+- No model, server, thread or memory-budget change; the existing 1.3 GB target
+  and 2-thread Granite runtime are unchanged.
 
 ## v0.2.12 — 2026-11-13
 

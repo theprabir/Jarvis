@@ -108,6 +108,7 @@ from core.productivity import (
     parse_when,
 )
 from core.tasks import TaskEngine, TaskError
+from core.agent import GoalAgent
 from core.timers import TimerError, TimerService
 from core.utilities import humanize_duration, parse_duration
 from tools import build_registry
@@ -267,7 +268,8 @@ HELP_TEXT = (
     " builds multi-source reports with saved history, /history"
     " shows recent exchanges, /memory manages saved and learned memories"
     " (list, learned, episodes, explain ID), /tasks lists durable plans"
-    " (show, approve, resume, cancel, history), /intent TEXT"
+    " (show, approve, resume, cancel, history, plan TEXT, agent TEXT),"
+    " /intent TEXT"
     " shows the detected intent as JSON, /tools lists computer tools, /confirm"
     " and /cancel handle pending actions, /forget deletes saved history after"
     " confirmation, /documents manages local document reading, indexing,"
@@ -1560,7 +1562,7 @@ class Assistant:
       return "Task planning is disabled, sir."
     request = " ".join(str(request or "").split())
     if not request:
-      return "What file steps should I plan, sir?"
+      return "What goal should I plan, sir?"
     nested = recognize_tasks(request)
     if nested is not None and nested.name == "task_organize":
       nested_background = background or bool(
@@ -1571,11 +1573,7 @@ class Assistant:
         request, self.router.allowed_apps, self.router.allowed_commands
     )
     if plan is None:
-      return (
-          "I can turn explicit multi-step file actions into a task, sir."
-          " Try 'as a task, create a folder named drafts and in that folder"
-          " write hello to file notes.txt'."
-      )
+      return self._task_agent_plan(request, background)
     try:
       task = tasks.create_file_plan(
           request, plan, background=background
@@ -1588,6 +1586,50 @@ class Assistant:
     mode = " in the background" if task.background else ""
     return (
         f"Task #{task.id} will run {len(plan)} file steps{mode}."
+        " Run /confirm to approve."
+    )
+
+  def _task_agent_plan(self, request, background=False):
+    """Plan a higher-level goal through the constrained task agent."""
+    tasks = self._get_tasks()
+    if tasks is None:
+      return "Task planning is disabled, sir."
+    if self.registry is None:
+      return "Task planning needs the computer tool registry, sir."
+    agent = GoalAgent(
+        self.registry,
+        allowed_apps=self.router.allowed_apps,
+        allowed_commands=self.router.allowed_commands,
+        max_steps=self._settings.tasks.max_steps,
+    )
+    try:
+      planned = agent.plan(request)
+    except TaskError as exc:
+      return f"I couldn't interpret that goal, sir: {exc}."
+    if planned is None:
+      return (
+          "I can plan file actions, folder organization, system checks,"
+          " folder inventories, file searches, or stages joined by"
+          " 'then'. Try 'as an agent, check my system then take inventory"
+          " of Downloads'."
+      )
+    try:
+      task = tasks.create(
+          planned.goal,
+          planned.steps,
+          kind=planned.kind,
+          context=planned.context,
+          background=background,
+      )
+    except TaskError as exc:
+      return f"I couldn't plan that task, sir: {exc}."
+    self._pending_task = task.id
+    self._pending_tool = None
+    self._pending_plan = None
+    mode = " in the background" if task.background else ""
+    summary = planned.summary or "run the plan"
+    return (
+        f"Task #{task.id} will {summary}{mode}."
         " Run /confirm to approve."
     )
 
@@ -1627,6 +1669,15 @@ class Assistant:
         return (
             f"Task #{task.id} completed: {files} files into"
             f" {categories} folders, {checks} checks passed."
+        )
+      summary = str(task.context.get("summary") or "").strip()
+      if summary:
+        check_text = ""
+        if checks:
+          noun = "check" if checks == 1 else "checks"
+          check_text = f" {checks} {noun} passed."
+        return (
+            f"Task #{task.id} completed: {summary}.{check_text}"
         )
       return (
           f"Task #{task.id} completed:"
@@ -1706,10 +1757,10 @@ class Assistant:
     rest = parts[1:]
     if action in {"list", "ls"}:
       return self._task_list_text(tasks)
-    if action == "plan":
+    if action in {"plan", "agent", "goal"}:
       request = " ".join(rest)
       if not request:
-        return "Usage: /tasks plan TEXT"
+        return f"Usage: /tasks {action} TEXT"
       background = " in the background" in f" {request.lower()}"
       request = re.sub(
           r"\s+in\s+(?:the\s+)?background\b",
@@ -1759,7 +1810,7 @@ class Assistant:
       return self._task_report(task)
     return (
         "Task commands: list, show ID, approve ID, approve-step ID,"
-        " resume ID, cancel ID, history."
+        " resume ID, cancel ID, history, plan TEXT, agent TEXT."
     )
 
   # -- deterministic intents -------------------------------------------

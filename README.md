@@ -7,11 +7,12 @@ interface; deterministic Python modules do the audio, routing and tool work.
 
 **Current status:** Phase 1 (stabilization) and feature sets **4.1 Voice
 Interface** through **4.14 Application Intelligence** complete, plus optional
-document OCR with confidence warnings, currently **v0.3.0** in the
+document OCR with confidence warnings, currently **v0.3.1** in the
 advanced feature line. v0.2.11 switches the local model to IBM
 Granite 4.0 1B Instruct Q4_K_M; v0.2.12 keeps the prompt prefix stable so
 llama.cpp can reuse its cache across turns; v0.3.0 adds the constrained
-autonomous task agent. Phase 4.14 adds active-window detection,
+autonomous task agent; v0.3.1 adds specialized logical agent roles. Phase 4.14
+adds active-window detection,
 clipboard assistance, confirmed browser actions, page summaries, screenshot
 OCR and application documentation search.
 JARVIS listens through the
@@ -299,6 +300,33 @@ history_items = 20
 single organization run can handle thousands of files. `auto_resume` restarts
 approved background tasks that were still running when JARVIS stopped;
 unapproved tasks stay paused until `/confirm`.
+
+### Specialized agent roles
+
+JARVIS has seven logical roles for one local Granite model. A role is a
+configuration with a responsibility, owned intents, keywords and a focused
+system prompt; it is not another model server or background process. Existing
+research, developer, productivity, filesystem, memory and task-verification
+services remain authoritative for their work.
+
+| Role | Responsibility | Example |
+| --- | --- | --- |
+| Main agent | Coordinates the assistant and is the fallback | `tell me a short story` |
+| Research agent | Web research and evidence-based answers | `use the research agent to compare two sources` |
+| Coding agent | Programming and debugging guidance | `use the coding agent to explain this traceback` |
+| Productivity agent | Tasks, scheduling and planning | `use the productivity agent to plan my week` |
+| File agent | Filesystem work inside the sandbox | `use the file agent to inventory Downloads` |
+| Memory agent | Saved memories and preferences | `use the memory agent to recall my preferences` |
+| Verification agent | Result validation and uncertainty | `use the verification agent to check the task result` |
+
+Role selection is deterministic: an explicit phrase wins, then a recognized
+intent, then role keywords; unrecognized requests stay with the main agent.
+Use `/roles` to list roles, `/role NAME` for one role, or
+`/role NAME REQUEST` to force a role for that request. The natural forms
+`use the NAME agent to ...`, `ask the NAME agent to ...`,
+`as a NAME agent, ...` and `NAME agent: ...` all work. A specialist prompt is
+inserted after the stable conversation transcript so the prompt cache remains
+effective.
 
 ### Productivity to-dos
 
@@ -1077,6 +1105,7 @@ core/server_manager.py  llama-server lifecycle and readiness
 core/brain.py           Single-shot prompt -> spoken-safe reply
 core/assistant.py       Conversation-aware replies, modes, history, commands
 core/agent.py           Constrained goal interpretation and task planning
+core/roles.py           Specialized logical roles and deterministic selection
 core/conversation.py    Turns, compression summary and answer modes
 core/history.py         SQLite conversation history
 core/intents.py         Deterministic intent routing and JSON validation
@@ -1164,6 +1193,10 @@ logs/                   Runtime logs (git-ignored)
   planned: the sequence stops at that clause and the confirmation shows what
   will run. Organization and `as a task` / `/tasks plan` requests become
   durable tasks; open-ended reasoning still goes to the model.
+- Agent roles are logical prompt and routing configurations over one shared
+  model. They do not run separate reasoning loops, message each other or
+  guarantee a particular specialist for ambiguous wording; explicit role
+  phrases and recognized intents are the reliable way to choose one.
 - Note search is lexical FTS5 with no embeddings; a search that uses
   different words from the note can miss it. Notes are not versioned, and
   deleting one is permanent after confirmation.

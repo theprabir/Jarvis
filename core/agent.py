@@ -139,7 +139,12 @@ class GoalAgent:
         goal=f"Organize {label}",
         kind="organize",
         steps=steps,
-        context={**context, "agent": True, "summary": summary},
+        context={
+            **context,
+            "agent": True,
+            "role": "file",
+            "summary": summary,
+        },
         summary=summary,
     )
 
@@ -174,6 +179,7 @@ class GoalAgent:
         context={
             "actions": len(steps),
             "agent": True,
+            "role": "file",
             "summary": summary,
         },
         summary=summary,
@@ -204,7 +210,7 @@ class GoalAgent:
         goal="Check system health",
         kind="system_check",
         steps=steps,
-        context={"agent": True, "summary": summary},
+        context={"agent": True, "role": "main", "summary": summary},
         summary=summary,
     )
 
@@ -231,7 +237,12 @@ class GoalAgent:
         goal=f"Inventory {path}",
         kind="inventory",
         steps=steps,
-        context={"path": path, "agent": True, "summary": summary},
+        context={
+            "path": path,
+            "agent": True,
+            "role": "file",
+            "summary": summary,
+        },
         summary=summary,
     )
 
@@ -261,6 +272,7 @@ class GoalAgent:
             "name": name,
             "path": path,
             "agent": True,
+            "role": "file",
             "summary": summary,
         },
         summary=summary,
@@ -299,7 +311,12 @@ class GoalAgent:
         goal=f"Create {path}",
         kind="folder",
         steps=steps,
-        context={"path": path, "agent": True, "summary": summary},
+        context={
+            "path": path,
+            "agent": True,
+            "role": "file",
+            "summary": summary,
+        },
         summary=summary,
     )
 
@@ -341,8 +358,10 @@ class GoalAgent:
         steps=steps,
         context={
             "agent": True,
+            "role": "main",
             "summary": summary,
             "stages": len(plans),
+            "roles": [plan.context.get("role", "main") for plan in plans],
         },
         summary=summary,
     )

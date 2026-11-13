@@ -7,6 +7,51 @@ all feature sets in a phase increments the middle number and resets the patch.
 feature sets in this level increment the patch (v0.2.1, …). **v0.3.0** begins
 the advanced line with feature set 4.15.
 
+## v0.3.1 — 2026-11-13
+
+**Feature set 4.16 Specialized Agent Roles**
+
+### Implemented functionality
+
+- **Seven logical roles** — main, research, coding, productivity, file, memory
+  and verification, defined as configurations in `core/roles.py`. They share
+  the existing Granite model; no second model, server or background process is
+  started.
+- **Deterministic selection** — explicit role phrases win first, then known
+  intent names, then role keywords, with the main agent as the fallback.
+- **Explicit controls** — `use the research agent to ...`, `ask the coding
+  agent to ...`, `as a file agent, ...`, `research agent: ...`, `/roles`,
+  `/role NAME` and `/role NAME REQUEST`.
+- **Role-shaped model turns** — specialized prompts are appended after the
+  stable conversation transcript, just before the current request, so the
+  cached prompt prefix is preserved.
+- **Existing services stay authoritative** — research, developer, productivity,
+  filesystem, memory and task-verification handlers continue to perform their
+  validated work; roles shape model guidance and make ownership explicit.
+- **Task context** — agent task plans record their logical role (`file` or
+  `main`), and compound plans record the roles of their stages.
+- Updated `README.md` and `/help` with role commands, examples and limitations.
+
+### Files
+
+- `core/roles.py` — role configurations, explicit-role parser and `RoleRouter`.
+- `core/assistant.py` — role selection, `/roles` and `/role` commands and
+  role-prompt injection.
+- `core/agent.py` — role metadata in goal plans.
+- `tests/test_roles.py` — role mapping, explicit controls and prompt tests.
+- `tests/test_agent.py` — role metadata assertions for goal plans.
+
+### Testing
+
+- Full suite: **598 tests, OK**.
+- `python -m compileall -q core tools web config tests main.py` passed.
+- `git diff --check` passed.
+- `python -m core.benchmark`: server started in 9.9 s; llama-server 1117.0 MB,
+  Python 37.8 MB, peak 1159.7 MB (target 1300 MB); prefill 6.3 tok/s,
+  generation 3.7 tok/s.
+- No model or background-process change; the 1.3 GB memory target and
+  2-thread Granite runtime are unchanged.
+
 ## v0.3.0 — 2026-11-13
 
 **Feature set 4.15 Autonomous Task Agent (advanced line begins)**

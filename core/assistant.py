@@ -109,6 +109,7 @@ from core.productivity import (
 )
 from core.tasks import TaskEngine, TaskError
 from core.agent import GoalAgent
+from core.roles import RoleRouter, RoleSelection
 from core.timers import TimerError, TimerService
 from core.utilities import humanize_duration, parse_duration
 from tools import build_registry
@@ -269,6 +270,7 @@ HELP_TEXT = (
     " shows recent exchanges, /memory manages saved and learned memories"
     " (list, learned, episodes, explain ID), /tasks lists durable plans"
     " (show, approve, resume, cancel, history, plan TEXT, agent TEXT),"
+    " /roles lists agent roles and /role NAME REQUEST forces one,"
     " /intent TEXT"
     " shows the detected intent as JSON, /tools lists computer tools, /confirm"
     " and /cancel handle pending actions, /forget deletes saved history after"
@@ -502,6 +504,8 @@ class Assistant:
         allowed_apps=settings.tools.allowed_apps,
         allowed_commands=settings.tools.allowed_commands,
     )
+    self.roles = RoleRouter()
+    self._last_role = "main"
     self._store = None
     if self._config.enabled:
       try:
@@ -531,7 +535,7 @@ class Assistant:
     self._learn(text, answer)
     return answer
 
-  def _reply(self, text):
+  def _reply(self, text, forced_role=None):
     """Answer one user message (typed or transcribed) with context."""
     text = (text or "").strip()
     if not text:
@@ -552,16 +556,35 @@ class Assistant:
       self._pending_plan = None
       self._pending_task = None
 
+    if forced_role is None:
+      explicit = self.roles.parse_explicit(text)
+      if explicit is not None:
+        forced_role = explicit.role
+        text = explicit.request
+
     if self.registry is not None:
       plan = plan_file_actions(
           text, self.router.allowed_apps, self.router.allowed_commands
       )
       if plan is not None:
+        self._last_role = forced_role.name if forced_role else "file"
         return self._propose_plan(plan, text)
 
     # Deterministic intents come first: short questions like "what time is it?"
     # contain reference words but are fully understood without context.
     intent = self.router.route(text)
+    selection = (
+        RoleSelection(forced_role, text, True)
+        if forced_role is not None
+        else self.roles.select(text, intent)
+    )
+    self._last_role = selection.role.name
+    log.info(
+        "Agent role %s selected for %r (explicit=%s)",
+        selection.role.name,
+        text,
+        selection.explicit,
+    )
     if self.router.is_confident(intent):
       if intent.name == "web_search":
         return self._answer_web(
@@ -594,6 +617,12 @@ class Assistant:
       conversation.maybe_summarize(self._summarize)
 
     messages = conversation.messages(SYSTEM_PROMPT)
+    if selection.role.name != "main":
+      # The role instruction is deliberately after the stable transcript so a
+      # specialist turn does not rewrite the cached conversation prefix.
+      messages.append(
+          {"role": "system", "content": selection.role.system_prompt}
+      )
     context = self._turn_context(text)
     if context:
       # This message is not stored in the transcript. Keeping it immediately
@@ -1649,6 +1678,9 @@ class Assistant:
         f"Status: {task.status}",
         f"Progress: {task.done_count()}/{len(task.steps)} steps",
     ]
+    role = str(task.context.get("role") or "").strip()
+    if role:
+      lines.append(f"Agent role: {role}")
     if task.error:
       lines.append(f"Error: {task.error}")
     for index, step in enumerate(task.steps, 1):
@@ -4736,6 +4768,8 @@ class Assistant:
       return self._todo_command(text)
     if command == "/tasks":
       return self._tasks_command(parts[1:])
+    if command in {"/roles", "/role"}:
+      return self._roles_command(parts[1:])
     if command in {"/documents", "/docs"}:
       return self._documents_command(text)
     if command == "/forget":
@@ -4743,6 +4777,21 @@ class Assistant:
     if command == "/help":
       return HELP_TEXT
     return f"Unknown command {command}. Try /help."
+
+  def _roles_command(self, parts):
+    """List roles, describe one, or force one for a single request."""
+    if not parts or parts[0].lower() in {"list", "show", "?"}:
+      return self.roles.help_text()
+    role = self.roles.get(parts[0])
+    if role is None:
+      return (
+          f"Unknown role {parts[0]!r}. Available roles: "
+          + ", ".join(self.roles.names())
+          + "."
+      )
+    if len(parts) == 1:
+      return role.detail()
+    return self._reply(" ".join(parts[1:]), forced_role=role)
 
   # -- document commands ------------------------------------------------
 

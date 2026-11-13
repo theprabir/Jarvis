@@ -68,6 +68,7 @@ class GoalAgentTests(unittest.TestCase):
         ["system_info", "processes"],
     )
     self.assertTrue(plan.steps[1].parallel)
+    self.assertEqual(plan.context["role"], "main")
     self.assertIn("system health", plan.summary)
 
   def test_inventory_and_search_goals(self):
@@ -75,6 +76,7 @@ class GoalAgentTests(unittest.TestCase):
     self.assertEqual(inventory.kind, "inventory")
     self.assertEqual(inventory.steps[0].tool, "list_files")
     self.assertEqual(inventory.steps[0].arguments["path"], "Downloads")
+    self.assertEqual(inventory.context["role"], "file")
 
     search = self.agent.plan("find report.pdf in my downloads")
     self.assertEqual(search.kind, "search")
@@ -115,6 +117,7 @@ class GoalAgentTests(unittest.TestCase):
         set(inventory.depends_on),
         {"stage1_system_info", "stage1_top_processes"},
     )
+    self.assertEqual(plan.context["roles"], ["main", "file"])
     self.assertIn("system health", plan.summary)
     self.assertIn("inventory of Downloads", plan.summary)
 
@@ -184,7 +187,9 @@ class AgentAssistantTests(unittest.TestCase):
     self.assertIn("inventory of Downloads", prompt)
     done = assistant.reply("yes")
     self.assertIn("completed", done.lower())
-    self.assertIn("3/3", assistant.reply("/tasks show 1"))
+    detail = assistant.reply("/tasks show 1")
+    self.assertIn("3/3", detail)
+    self.assertIn("Agent role: main", detail)
     self.assertEqual(client.calls, [])
 
   def test_tasks_agent_command(self):

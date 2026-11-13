@@ -189,6 +189,24 @@ search_limit = 10
 quiz_size = 5
 plan_days = 7
 
+[proactive]
+# Deterministic briefings, deadline checks, conflicts and system alerts.
+# Checks are read-only; no model turn is used. An enabled session schedules
+# one silent morning briefing at briefing_hour and reschedules it daily.
+enabled = true
+db = "data/jarvis.db"
+auto_briefing = true
+briefing_hour = 8
+deadline_days = 3
+conflict_days = 7
+research_limit = 5
+news_limit = 5
+max_items = 8
+low_disk_free_gb = 5.0
+high_disk_percent = 90.0
+high_memory_percent = 85.0
+high_cpu_percent = 90.0
+
 [habits]
 # Daily habits with check-in streaks and optional recurring reminders.
 # Habits share the assistant database but use their own tables.

@@ -182,6 +182,7 @@ ROLES = {
                 "summary_daily",
                 "summary_meeting",
                 "knowledge",
+                "proactive",
             }
         ),
         keywords=(
@@ -206,6 +207,10 @@ ROLES = {
             "flashcards",
             "quiz me",
             "study plan",
+            "morning briefing",
+            "daily briefing",
+            "upcoming deadlines",
+            "news summary",
         ),
     ),
     "file": AgentRole(

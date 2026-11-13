@@ -50,6 +50,7 @@ class Scheduled:
   source_id: int | None = None
   repeat: str = ""
   on_done: object | None = None
+  silent: bool = False
 
   @property
   def remaining_s(self):
@@ -146,7 +147,7 @@ class TimerService:
   def set_notifier(self, callback):
     self._notify = callback
 
-  def add_timer(self, seconds, label="", on_done=None):
+  def add_timer(self, seconds, label="", on_done=None, silent=False):
     seconds = int(seconds)
     if not 1 <= seconds <= 24 * 3600:
       raise TimerError("a timer must be between 1 second and 24 hours")
@@ -159,6 +160,7 @@ class TimerService:
           label=(label or "").strip(),
           due_at=datetime.now() + timedelta(seconds=seconds),
           on_done=on_done,
+          silent=bool(silent),
       )
       self._timers[("timer", timer_id)] = entry
     return entry
@@ -313,6 +315,8 @@ class TimerService:
             self._db.commit()
           except sqlite3.Error as exc:
             log.warning("Could not mark reminder %s fired: %s", entry.id, exc)
+      elif entry.silent:
+        pass
       elif entry.label:
         messages.append(f"Timer finished: {entry.label}.")
       else:

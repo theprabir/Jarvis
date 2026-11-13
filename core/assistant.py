@@ -105,6 +105,7 @@ from core.knowledge import (
     format_card,
     format_item,
 )
+from core.proactive import ProactiveError, ProactiveService, ProactiveState
 from core.productivity import (
     ProductivityError,
     ProductivityService,
@@ -287,7 +288,8 @@ HELP_TEXT = (
     " /roles lists agent roles and /role NAME REQUEST forces one,"
     " /vision reads, summarizes, compares, indexes and troubleshoots local"
     " images and screenshots, /knowledge manages the personal knowledge"
-    " base, flashcards and study review, /intent TEXT"
+    " base, flashcards and study review, /proactive shows briefings and"
+    " proactive alerts, /intent TEXT"
     " shows the detected intent as JSON, /tools lists computer tools, /confirm"
     " and /cancel handle pending actions, /forget deletes saved history after"
     " confirmation, /documents manages local document reading, indexing,"
@@ -316,6 +318,7 @@ DOCUMENTS_HELP = (
 TODO_DISABLED = "Productivity is disabled, sir."
 NOTES_DISABLED = "Notes are disabled, sir."
 KNOWLEDGE_DISABLED = "The knowledge base is disabled, sir."
+PROACTIVE_DISABLED = "Proactive briefings are disabled, sir."
 HABITS_DISABLED = "Habit tracking is disabled, sir."
 GOALS_DISABLED = "Goal tracking is disabled, sir."
 TIME_DISABLED = "Time tracking is disabled, sir."
@@ -343,6 +346,13 @@ KNOWLEDGE_HELP = (
     " flashcards [ITEM_ID], due [N], review CARD_ID correct|wrong,"
     " quiz [N] [TOPIC], progress [TOPIC], plan [DAYS], import notes,"
     " remove ID. Items are categorized and linked automatically."
+)
+
+PROACTIVE_HELP = (
+    "Proactive commands: briefing, daily, deadlines, alerts [all], tasks,"
+    " conflicts, research, news [TOPIC], system, projects, recommend,"
+    " ack, reset. Displayed alerts are acknowledged so they do not repeat;"
+    " use alerts all to review acknowledged alerts. No model turn is used."
 )
 
 HABITS_HELP = (
@@ -487,6 +497,8 @@ class Assistant:
     self._productivity = None
     self._notes = None
     self._knowledge = None
+    self._proactive = None
+    self._briefing_timer = None
     self._habits = None
     self._goals = None
     self._time_tracking = None
@@ -735,10 +747,18 @@ class Assistant:
   def set_notifier(self, callback):
     """Route timer and reminder notifications through the interface."""
     self._notifier = callback
+    if (
+        callback is None
+        and self._briefing_timer is not None
+        and self._timers is not None
+    ):
+      self._timers.cancel(self._briefing_timer.id)
+      self._briefing_timer = None
     if self._timers is not None:
       self._timers.set_notifier(callback)
     if self._tasks is not None:
       self._tasks.set_notifier(callback)
+    self._schedule_briefing()
 
   def close(self):
     if self._productivity is not None:
@@ -750,6 +770,10 @@ class Assistant:
     if self._knowledge is not None:
       self._knowledge.close()
       self._knowledge = None
+    if self._proactive is not None:
+      self._proactive.close()
+      self._proactive = None
+    self._briefing_timer = None
     if self._habits is not None:
       self._habits.close()
       self._habits = None
@@ -865,6 +889,104 @@ class Assistant:
         log.error("Knowledge base unavailable: %s", exc)
         return None
     return self._knowledge
+
+  def _get_proactive(self):
+    """Build the read-only briefing layer over existing local services."""
+    if not self._settings.proactive.enabled:
+      return None
+    if self._proactive is None:
+      try:
+        self._proactive = ProactiveService(
+            self._settings.proactive,
+            productivity=self._get_productivity,
+            calendar=self._get_calendar,
+            tasks=self._get_tasks,
+            goals=self._get_goals,
+            research=self._get_research,
+            knowledge=self._get_knowledge,
+            system=self._get_system_snapshot,
+            news=self._get_news_snapshot,
+            state=ProactiveState(self._settings.proactive.resolved_db),
+        )
+      except ProactiveError as exc:
+        log.error("Proactive briefings unavailable: %s", exc)
+        return None
+    return self._proactive
+
+  def _get_system_snapshot(self):
+    """Return local system metrics for deterministic performance alerts."""
+    try:
+      from tools.system import system_info
+
+      result = system_info(self._settings.tools, "all")
+      return result.data if result.ok else {}
+    except Exception as exc:
+      log.info("System snapshot unavailable: %s", exc)
+      return {}
+
+  def _get_news_snapshot(self, query=""):
+    """Return bounded news snippets from the existing web searcher."""
+    searcher = self._get_searcher()
+    if searcher is None:
+      return []
+    text = "latest news"
+    if str(query or "").strip():
+      text += " " + str(query).strip()
+    bundle = searcher.search(text)
+    rows = getattr(bundle, "results", ()) or ()
+    return [
+        {
+            "title": getattr(item, "title", "News item"),
+            "snippet": getattr(item, "snippet", "") or getattr(item, "text", ""),
+            "url": getattr(item, "url", ""),
+        }
+        for item in rows
+    ]
+
+  def _schedule_briefing(self):
+    """Schedule one silent daily morning briefing through the timer service."""
+    if (
+        self._notifier is None
+        or not self._settings.proactive.enabled
+        or not self._settings.proactive.auto_briefing
+        or self._briefing_timer is not None
+    ):
+      return None
+    timers = self._get_timers()
+    if timers is None:
+      return None
+    now = datetime.now()
+    target = now.replace(
+        hour=int(self._settings.proactive.briefing_hour),
+        minute=0,
+        second=0,
+        microsecond=0,
+    )
+    if target <= now:
+      target += timedelta(days=1)
+    seconds = min(86400, max(1, int((target - now).total_seconds())))
+    try:
+      self._briefing_timer = timers.add_timer(
+          seconds,
+          on_done=self._briefing_due,
+          silent=True,
+      )
+    except Exception as exc:
+      log.info("Morning briefing could not be scheduled: %s", exc)
+      self._briefing_timer = None
+    return self._briefing_timer
+
+  def _briefing_due(self, _entry=None):
+    """Deliver the scheduled briefing and prepare tomorrow's check."""
+    self._briefing_timer = None
+    try:
+      service = self._get_proactive()
+      if service is not None and self._notifier is not None:
+        self._notifier(service.morning())
+    except Exception as exc:
+      log.warning("Scheduled morning briefing failed: %s", exc)
+    finally:
+      self._schedule_briefing()
 
   def _get_habits(self):
     """Build the habit service lazily and reuse the timer scheduler."""
@@ -1911,6 +2033,8 @@ class Assistant:
       return self._vision_intent(intent)
     if intent.name == "knowledge":
       return self._knowledge_intent(intent)
+    if intent.name == "proactive":
+      return self._proactive_intent(intent)
     if intent.name == "time":
       now = datetime.now()
       return (
@@ -3582,6 +3706,59 @@ class Assistant:
     self._pending_tool = ("note_delete", arguments, user_text)
     return f"{description}. Please confirm to continue."
 
+  # -- proactive briefings and alerts ------------------------------------
+
+  def _proactive_command(self, text):
+    service = self._get_proactive()
+    if service is None:
+      return PROACTIVE_DISABLED
+    parts = text.split(maxsplit=1)
+    body = parts[1].strip() if len(parts) > 1 else ""
+    if not body or body.lower() in {"help", "?"}:
+      return PROACTIVE_HELP
+    action, _separator, rest = body.partition(" ")
+    action = action.lower()
+    rest = rest.strip()
+    try:
+      if action in {"briefing", "morning"}:
+        return service.morning()
+      if action in {"daily", "today"}:
+        return service.daily()
+      if action in {"deadlines", "due"}:
+        return service.deadlines()
+      if action in {"alerts", "status"}:
+        return service.alerts(include_all=rest.lower() in {"all", "history"})
+      if action in {"tasks", "unfinished"}:
+        return service.unfinished()
+      if action in {"conflicts", "calendar"}:
+        return service.conflicts()
+      if action in {"research", "digest"}:
+        return service.research_summary()
+      if action in {"news", "headlines"}:
+        return service.news(rest)
+      if action in {"system", "performance", "disk"}:
+        return service.system_alerts()
+      if action in {"projects", "progress"}:
+        return service.projects()
+      if action in {"recommend", "next", "advice"}:
+        return service.recommendations()
+      if action == "ack":
+        count = service.acknowledge()
+        return f"Acknowledged {count} proactive alert(s), sir."
+      if action in {"reset", "clear"}:
+        count = service.reset_acknowledgements()
+        return f"Cleared {count} proactive acknowledgement record(s), sir."
+    except ProactiveError as exc:
+      return f"I couldn't build that briefing, sir: {exc}."
+    return PROACTIVE_HELP
+
+  def _proactive_intent(self, intent):
+    action = str(intent.entities.get("action") or "briefing").lower()
+    if action == "news":
+      query = str(intent.entities.get("query") or "").strip()
+      return self._proactive_command(f"/proactive news {query}".strip())
+    return self._proactive_command(f"/proactive {action}")
+
   # -- personal knowledge and learning ----------------------------------
 
   def _knowledge_command(self, text):
@@ -5057,6 +5234,12 @@ class Assistant:
       return self._notes_command(text)
     if command in {"/knowledge", "/kb"}:
       return self._knowledge_command(text)
+    if command in {"/proactive", "/briefing", "/alerts"}:
+      if len(text.split()) == 1 and command == "/briefing":
+        text = "/proactive briefing"
+      elif len(text.split()) == 1 and command == "/alerts":
+        text = "/proactive alerts"
+      return self._proactive_command(text)
     if command in {"/habits", "/habit"}:
       return self._habit_command(text)
     if command in {"/goals", "/goal"}:

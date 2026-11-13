@@ -206,6 +206,30 @@ class KnowledgeConfig:
 
 
 @dataclass(frozen=True)
+class ProactiveConfig:
+  enabled: bool = True
+  # Acknowledgement state shares the assistant database.
+  db: str = "data/jarvis.db"
+  # Deterministic briefing and alert thresholds; no model or worker is used.
+  auto_briefing: bool = True
+  briefing_hour: int = 8
+  deadline_days: int = 3
+  conflict_days: int = 7
+  research_limit: int = 5
+  news_limit: int = 5
+  max_items: int = 8
+  low_disk_free_gb: float = 5.0
+  high_disk_percent: float = 90.0
+  high_memory_percent: float = 85.0
+  high_cpu_percent: float = 90.0
+
+  @property
+  def resolved_db(self) -> Path:
+    path = Path(self.db)
+    return path if path.is_absolute() else (PROJECT_ROOT / path).resolve()
+
+
+@dataclass(frozen=True)
 class HabitsConfig:
   enabled: bool = True
   # Habits share the assistant database but use their own tables.
@@ -459,6 +483,7 @@ class Settings:
   productivity: ProductivityConfig
   notes: NotesConfig
   knowledge: KnowledgeConfig
+  proactive: ProactiveConfig
   habits: HabitsConfig
   goals: GoalsConfig
   time: TimeConfig
@@ -654,6 +679,54 @@ def _validate(settings):
   _require(
       isinstance(knowledge.enabled, bool),
       "[knowledge] enabled must be true or false",
+  )
+
+  proactive = settings.proactive
+  _require(bool(proactive.db), "[proactive] db must not be empty")
+  _require(
+      0 <= proactive.briefing_hour <= 23,
+      "[proactive] briefing_hour must be 0-23",
+  )
+  _require(
+      isinstance(proactive.auto_briefing, bool),
+      "[proactive] auto_briefing must be true or false",
+  )
+  _require(
+      1 <= proactive.deadline_days <= 30,
+      "[proactive] deadline_days must be 1-30",
+  )
+  _require(
+      1 <= proactive.conflict_days <= 30,
+      "[proactive] conflict_days must be 1-30",
+  )
+  _require(
+      1 <= proactive.research_limit <= 20,
+      "[proactive] research_limit must be 1-20",
+  )
+  _require(
+      1 <= proactive.news_limit <= 20,
+      "[proactive] news_limit must be 1-20",
+  )
+  _require(
+      1 <= proactive.max_items <= 30,
+      "[proactive] max_items must be 1-30",
+  )
+  _require(
+      proactive.low_disk_free_gb >= 0,
+      "[proactive] low_disk_free_gb must be >= 0",
+  )
+  for name in (
+      "high_disk_percent",
+      "high_memory_percent",
+      "high_cpu_percent",
+  ):
+    _require(
+        1 <= getattr(proactive, name) <= 100,
+        f"[proactive] {name} must be 1-100",
+    )
+  _require(
+      isinstance(proactive.enabled, bool),
+      "[proactive] enabled must be true or false",
   )
 
   habits = settings.habits
@@ -1038,6 +1111,9 @@ def load_settings(path=None):
       notes=_build(NotesConfig, raw.get("notes", {}), "notes"),
       knowledge=_build(
           KnowledgeConfig, raw.get("knowledge", {}), "knowledge"
+      ),
+      proactive=_build(
+          ProactiveConfig, raw.get("proactive", {}), "proactive"
       ),
       habits=_build(HabitsConfig, raw.get("habits", {}), "habits"),
       goals=_build(GoalsConfig, raw.get("goals", {}), "goals"),

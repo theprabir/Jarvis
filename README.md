@@ -7,13 +7,14 @@ interface; deterministic Python modules do the audio, routing and tool work.
 
 **Current status:** Phase 1 (stabilization) and feature sets **4.1 Voice
 Interface** through **4.14 Application Intelligence** complete, plus optional
-document OCR with confidence warnings, currently **v0.3.3** in the
+document OCR with confidence warnings, currently **v0.3.4** in the
 advanced feature line. v0.2.11 switches the local model to IBM
 Granite 4.0 1B Instruct Q4_K_M; v0.2.12 keeps the prompt prefix stable so
 llama.cpp can reuse its cache across turns; v0.3.0 adds the constrained
 autonomous task agent; v0.3.1 adds specialized logical agent roles; v0.3.2
 adds local visual intelligence; v0.3.3 adds a personal knowledge base with
-flashcards and spaced review. Phase 4.14 adds active-window detection,
+flashcards and spaced review; v0.3.4 adds deterministic proactive briefings
+and alerts. Phase 4.14 adds active-window detection,
 clipboard assistance, confirmed browser actions, page summaries, screenshot
 OCR and application documentation search.
 JARVIS listens through the
@@ -40,7 +41,10 @@ daily agendas, local email drafts with optional connected-account search and
 sending, Pomodoro work/break phases, bounded clipboard history, and daily or
 meeting summaries. The 4.18 knowledge layer adds a local personal knowledge
 base, automatic keyword categorization, a topic graph, deterministic
-flashcards and quizzes, spaced review and study planning (see
+flashcards and quizzes, spaced review and study planning. The 4.19 proactive
+layer adds morning and daily briefings, deadline and unfinished-task checks,
+calendar conflict detection, research and news digests, system alerts,
+project progress and suggested next actions (see
 `PLANS-STACK-FEATURES.md`, `CHANGELOG.md`).
 
 ## Requirements
@@ -97,6 +101,7 @@ All runtime settings live in `config/settings.toml`:
 | `[productivity]` | Local to-do database, default priority and list limits |
 | `[notes]` | Local note database, content limits and search result limits |
 | `[knowledge]` | Knowledge database, item/text limits, search, quiz and plan sizes |
+| `[proactive]` | Briefing schedule, deadline/conflict windows, alert thresholds and digest sizes |
 | `[habits]` | Daily habit database and habit-count limit |
 | `[goals]` | Goal database and goal-count limit |
 | `[time]` | Time-entry database and time-entry limit |
@@ -507,6 +512,63 @@ max_text_chars = 20000
 search_limit = 10
 quiz_size = 5
 plan_days = 7
+```
+
+### Proactive briefings and alerts
+
+Proactive intelligence is a read-only composition layer over existing local
+services. It never starts a model turn, background worker or autonomous
+action; checks are deterministic and run on request. An enabled session also
+schedules one silent morning briefing at `briefing_hour` through the existing
+timer scheduler and reschedules it daily, so notifications arrive through the
+normal speech/notification callback.
+
+| Capability | Behaviour |
+| --- | --- |
+| Morning briefing | `/briefing`, `/proactive morning`, `good morning`, `morning briefing` |
+| Daily task briefing | `/proactive daily`, `daily briefing`, `what's my day look like` |
+| Deadlines | `/proactive deadlines`, `what's due soon`, `upcoming deadlines` |
+| Unfinished tasks | `/proactive tasks`, `unfinished tasks`, `task reminders` |
+| Calendar conflicts | `/proactive conflicts`, `calendar conflicts`, `any conflicts` |
+| Research digest | `/proactive research`, `research summary` |
+| News digest | `/proactive news [TOPIC]`, `news summary`, `news summary about AI` |
+| System alerts | `/proactive system`, `system alerts`, `disk space`, `performance alerts` |
+| Project progress | `/proactive projects`, `project progress`, `how are my projects` |
+| Alerts summary | `/alerts`, `/proactive alerts`, `what needs attention` |
+| Review all alerts | `/proactive alerts all` |
+| Acknowledge | `/proactive ack` |
+| Clear acknowledgement state | `/proactive reset` |
+| Suggested actions | `/proactive recommend`, `what should I do next` |
+
+Briefings combine today's open to-dos, calendar events, near-term deadlines,
+durable tasks that are still running or paused, recent saved research and
+configured system checks. Deadline and conflict windows, digest sizes and the
+disk, memory and CPU alert thresholds are configurable. News summaries use the
+existing web searcher's titles, snippets and URLs without an extra model call;
+research digests read the existing saved research history. Recommendations
+are rule-based, context-aware hints such as clearing an overdue item, resolving
+a double-booking, resuming a task, reviewing due flashcards or freeing disk
+space. Displayed alert sections are acknowledged automatically and omitted
+from later briefings; a changed alert gets a new identity and appears again.
+`/proactive alerts all` reviews current alerts without acknowledging them,
+`/proactive ack` acknowledges them explicitly, and `/proactive reset` clears
+the acknowledgement state.
+
+```toml
+[proactive]
+enabled = true
+db = "data/jarvis.db"
+auto_briefing = true
+briefing_hour = 8
+deadline_days = 3
+conflict_days = 7
+research_limit = 5
+news_limit = 5
+max_items = 8
+low_disk_free_gb = 5.0
+high_disk_percent = 90.0
+high_memory_percent = 85.0
+high_cpu_percent = 90.0
 ```
 
 ### Habits
@@ -1214,6 +1276,7 @@ core/learning.py        Candidate extraction, importance, episodes, short-term b
 core/tasks.py           Durable plans, execution, approval, checkpoints, history
 core/notes.py           Local notes, FTS5 search, scan fallback and formatting
 core/knowledge.py       Knowledge items, categories, graph, flashcards and review
+core/proactive.py       Deterministic briefings, alerts, conflicts and recommendations
 tools/notes.py          Note tool handlers for the validated registry
 core/habits.py          Daily habits, streaks, parsing and reminder scheduling
 tools/habits.py         Habit tool handlers for the validated registry
@@ -1293,6 +1356,15 @@ logs/                   Runtime logs (git-ignored)
   Flashcards come from statements and bullet points, so narrative prose or
   tables may produce fewer cards. Quizzes show their answer key and do not
   record a score. Review scheduling uses the computer's local time.
+- Proactive briefings are deterministic snapshots, not autonomous monitoring.
+  They run when requested and through one daily timer; they do not continuously
+  watch files, email or the web. News quality depends on the configured search
+  provider and its snippets, and research digests only cover saved reports.
+  Calendar conflicts use event start and end times; all-day or external
+  calendar providers are not represented. System thresholds are configured
+  alerts, not predictive diagnostics. Displayed alerts are acknowledged by
+  default; use `/proactive alerts all` to review them or `/proactive reset` to
+  make them new again.
 - Habits are daily-only and keep one check-in per local date. Weekly targets,
   pauses, multiple check-ins per day and custom time zones are not supported.
   Streaks use the computer's local date, so travel can shift a day boundary.

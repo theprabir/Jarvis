@@ -7,6 +7,81 @@ all feature sets in a phase increments the middle number and resets the patch.
 feature sets in this level increment the patch (v0.2.1, …). **v0.3.0** begins
 the advanced line with feature set 4.15.
 
+## v0.3.4 — 2026-11-13
+
+**Feature set 4.19 Proactive Intelligence**
+
+### Implemented functionality
+
+- **Morning briefing** — `core/proactive.py` composes a deterministic greeting
+  with today's open to-dos, overdue work, calendar events, near-term deadlines,
+  unfinished durable tasks, recent research, system alerts and suggested next
+  actions.
+- **Daily task briefing** — a shorter task-focused view for the current day,
+  with the same deterministic deadline, system and recommendation checks.
+- **Upcoming deadline notifications** — open to-dos and active goals inside the
+  configurable deadline window are surfaced with due dates and progress;
+  overdue items are called out separately.
+- **Unfinished task reminders** — durable tasks that are pending, running,
+  paused, awaiting a step or failed are reported with step progress and the
+  current checkpoint; completed and cancelled tasks are omitted.
+- **Calendar conflict detection** — overlapping events in today's agenda and
+  the upcoming conflict window are detected from event start and end times.
+- **Periodic research summaries** — the existing saved research history is
+  reduced to a short digest with report titles, dates and source counts.
+- **News summaries** — the existing web searcher supplies bounded titles,
+  snippets and URLs on request, with no additional model or background fetch.
+- **System alerts** — configurable low-disk, high-memory and high-CPU thresholds
+  produce performance alerts from a local psutil snapshot.
+- **Project progress summaries** — active goals and unfinished durable tasks
+  are reported with percentages or completed step counts.
+- **Suggested next actions and context-aware recommendations** — rule-based
+  hints prioritize overdue deadlines, calendar overlaps, unfinished tasks,
+  due flashcards, disk pressure and the current time of day.
+- **Alert deduplication and acknowledgement** — deadline, conflict, unfinished
+  task and system alerts get stable identities and are acknowledged after
+  they are shown, so later briefings do not repeat them. New or changed alerts
+  appear with a new identity. `/proactive alerts all` reviews without
+  acknowledging, `/proactive ack` acknowledges explicitly and
+  `/proactive reset` clears the state. State is stored in the shared assistant
+  database.
+- **Scheduled check** — an enabled session schedules one silent morning
+  briefing through the existing timer scheduler and reschedules it daily;
+  checks remain read-only and never run a continuous LLM loop.
+- **Controls** — `/proactive`, `/briefing` and `/alerts` commands, plus natural
+  requests such as `good morning`, `daily briefing`, `what's due soon`,
+  `unfinished tasks`, `calendar conflicts`, `research summary`, `news summary`,
+  `system alerts`, `project progress` and `what should I do next`.
+- Updated `README.md` and `/help` with proactive commands, configuration and
+  limitations. No new runtime dependency or model was added.
+
+### Files
+
+- `core/proactive.py` — `ProactiveService`, persistent `ProactiveState` and
+  deterministic section builders.
+- `core/assistant.py` — lazy proactive service, scheduled briefing, commands,
+  acknowledgement controls, natural intent handling, system/news providers and
+  help text.
+- `core/intents.py` — proactive request recognizer and intent registration.
+- `core/timers.py` — optional silent one-shot timers for scheduled briefings;
+  existing timer and reminder notifications are unchanged.
+- `core/config.py` — `ProactiveConfig` validation and settings wiring.
+- `config/settings.toml` — `[proactive]` section.
+- `core/roles.py` — productivity role owns briefings and proactive alerts.
+- `tests/test_proactive.py` — briefing composition, deadlines, conflicts,
+  unfinished tasks, system thresholds, research/news digests, projects,
+  recommendations, acknowledgement persistence, natural intents, assistant
+  commands, silent timer delivery and scheduled callback rescheduling.
+
+### Testing
+
+- Full suite: **629 tests, OK**.
+- `python -m compileall -q core tools web config tests main.py` passed.
+- `git diff --check` passed.
+- `python -m core.benchmark`: server started in 3.1 s; llama-server 1117.0 MB,
+  Python 35.8 MB, assistant total 1152.7 MB, peak 1157.6 MB (target
+  1300 MB); prefill 4.75 s, generation 4.54 s.
+
 ## v0.3.3 — 2026-11-13
 
 **Feature set 4.18 Knowledge and Learning**

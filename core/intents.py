@@ -106,6 +106,7 @@ CONVERSATION_INTENTS = frozenset(
         "application_docs",
         "vision",
         "knowledge",
+        "proactive",
         "remember_memory",
         "search_memory",
         "list_memory",
@@ -2094,6 +2095,102 @@ _VISION_SEARCH = re.compile(
 )
 
 
+_PROACTIVE_MORNING = re.compile(
+    r"^(?:good\s+morning|morning\s+briefing|morning\s+update)$",
+    re.I,
+)
+_PROACTIVE_DAILY = re.compile(
+    r"^(?:daily|today'?s)\s+briefing$"
+    r"|^what(?:'s|\s+is)\s+my\s+day(?:\s+look\s+like)?$"
+    r"|^brief\s+me$",
+    re.I,
+)
+_PROACTIVE_DEADLINES = re.compile(
+    r"^(?:what(?:'s|\s+is)\s+due(?:\s+soon)?"
+    r"|upcoming\s+deadlines?|show\s+(?:my\s+)?deadlines?)$",
+    re.I,
+)
+_PROACTIVE_UNFINISHED = re.compile(
+    r"^(?:unfinished\s+tasks?|task\s+reminders?"
+    r"|show\s+(?:my\s+)?unfinished\s+tasks?"
+    r"|what\s+tasks?\s+are\s+unfinished)$",
+    re.I,
+)
+_PROACTIVE_CONFLICTS = re.compile(
+    r"^(?:calendar\s+conflicts?|any\s+(?:calendar\s+)?conflicts?"
+    r"|check\s+(?:my\s+)?calendar\s+for\s+conflicts?)$",
+    re.I,
+)
+_PROACTIVE_RESEARCH = re.compile(
+    r"^(?:research\s+(?:summary|digest)"
+    r"|summari[sz]e\s+my\s+research"
+    r"|show\s+(?:my\s+)?research\s+(?:summary|digest))$",
+    re.I,
+)
+_PROACTIVE_NEWS = re.compile(
+    r"^(?:news\s+(?:summary|digest)"
+    r"|what(?:'s|\s+is)\s+in\s+the\s+news)"
+    r"(?:\s+(?:about|on)\s+(?P<query>.+))?$",
+    re.I,
+)
+_PROACTIVE_SYSTEM = re.compile(
+    r"^(?:system\s+alerts?|performance\s+alerts?"
+    r"|disk\s+space(?:\s+alert)?|system\s+performance)$",
+    re.I,
+)
+_PROACTIVE_PROJECTS = re.compile(
+    r"^(?:project\s+(?:progress|summary)"
+    r"|how\s+are\s+my\s+projects(?:\s+going)?)$",
+    re.I,
+)
+_PROACTIVE_RECOMMEND = re.compile(
+    r"^(?:what\s+should\s+i\s+do\s+next"
+    r"|suggest\s+next\s+actions?|recommendations?"
+    r"|what\s+do\s+you\s+recommend)$",
+    re.I,
+)
+_PROACTIVE_ALERTS = re.compile(
+    r"^(?:proactive\s+alerts?|any\s+alerts?"
+    r"|what\s+needs\s+attention)$",
+    re.I,
+)
+
+
+def recognize_proactive(text):
+  """Recognize bounded briefing and proactive-check requests."""
+  source = (text or "").strip().rstrip("?.!")
+  if not source:
+    return None
+  if _PROACTIVE_MORNING.match(source):
+    return Intent("proactive", 0.94, {"action": "morning"})
+  if _PROACTIVE_DAILY.match(source):
+    return Intent("proactive", 0.93, {"action": "daily"})
+  if _PROACTIVE_DEADLINES.match(source):
+    return Intent("proactive", 0.92, {"action": "deadlines"})
+  if _PROACTIVE_UNFINISHED.match(source):
+    return Intent("proactive", 0.92, {"action": "tasks"})
+  if _PROACTIVE_CONFLICTS.match(source):
+    return Intent("proactive", 0.92, {"action": "conflicts"})
+  if _PROACTIVE_RESEARCH.match(source):
+    return Intent("proactive", 0.9, {"action": "research"})
+  match = _PROACTIVE_NEWS.match(source)
+  if match:
+    return Intent(
+        "proactive",
+        0.9,
+        {"action": "news", "query": _clean(match.group("query") or "")},
+    )
+  if _PROACTIVE_SYSTEM.match(source):
+    return Intent("proactive", 0.92, {"action": "system"})
+  if _PROACTIVE_PROJECTS.match(source):
+    return Intent("proactive", 0.9, {"action": "projects"})
+  if _PROACTIVE_RECOMMEND.match(source):
+    return Intent("proactive", 0.9, {"action": "recommend"})
+  if _PROACTIVE_ALERTS.match(source):
+    return Intent("proactive", 0.9, {"action": "alerts"})
+  return None
+
+
 def recognize_knowledge(text):
   """Recognize personal knowledge, flashcard and study review requests."""
   source = (text or "").strip().rstrip("?.!")
@@ -2809,6 +2906,9 @@ class IntentRouter:
         return Intent(name=name, confidence=1.0)
       return None
 
+    intent = recognize_proactive(text)
+    if intent is not None:
+      return intent
     intent = recognize_tasks(text)
     if intent is not None:
       return intent

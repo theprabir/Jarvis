@@ -105,6 +105,7 @@ CONVERSATION_INTENTS = frozenset(
         "application_screenshot",
         "application_docs",
         "vision",
+        "knowledge",
         "remember_memory",
         "search_memory",
         "list_memory",
@@ -1971,6 +1972,65 @@ _DOCUMENT_REPORT = re.compile(
 )
 
 
+_KNOWLEDGE_ADD = re.compile(
+    r"^(?:add|save|learn)\s+(?:this\s+)?to\s+(?:my\s+)?"
+    r"knowledge(?:\s+base)?\s*:?\s+(?P<content>.+)$",
+    re.I,
+)
+_KNOWLEDGE_SEARCH = re.compile(
+    r"^(?:search|find)\s+(?:my\s+|the\s+)?knowledge(?:\s+base)?"
+    r"\s+(?:for\s+)?(?P<query>.+)$",
+    re.I,
+)
+_KNOWLEDGE_SUMMARY = re.compile(
+    r"^(?:what\s+do\s+i\s+know\s+about|summari[sz]e\s+my\s+"
+    r"knowledge(?:\s+base)?\s+(?:about|on)?)\s*(?P<topic>.+)$",
+    re.I,
+)
+_KNOWLEDGE_CROSS = re.compile(
+    r"^(?:cross[-\s]?check|compare)\s+(?:my\s+)?knowledge(?:\s+base)?"
+    r"\s+(?:with|against|and)\s+(?:my\s+)?documents?"
+    r"(?:\s+(?:about|on))?\s+(?P<query>.+)$",
+    re.I,
+)
+_KNOWLEDGE_QUIZ = re.compile(
+    r"^quiz\s+me(?:\s+(?:on|about))?\s+(?P<topic>.+)$",
+    re.I,
+)
+_KNOWLEDGE_DUE = re.compile(
+    r"^(?:what(?:'s|\s+is)\s+due(?:\s+for\s+review|\s+today)?"
+    r"|show\s+(?:due\s+)?(?:flash)?cards)$",
+    re.I,
+)
+_KNOWLEDGE_PROGRESS = re.compile(
+    r"^(?:knowledge|study)\s+progress(?:\s+(?:for|on)\s+(?P<topic>.+))?$",
+    re.I,
+)
+_KNOWLEDGE_PLAN = re.compile(
+    r"^(?:make\s+|create\s+)?(?:a\s+)?(?:study|learning)\s+plan"
+    r"(?:\s+for\s+(?P<days>\d+)\s+days?)?$",
+    re.I,
+)
+_KNOWLEDGE_GRAPH = re.compile(
+    r"^(?:show\s+)?(?:my\s+)?(?:knowledge|topic)\s+graph$",
+    re.I,
+)
+_KNOWLEDGE_TOPICS = re.compile(
+    r"^(?:show\s+)?(?:my\s+)?(?:knowledge|learning)\s+topics$",
+    re.I,
+)
+_KNOWLEDGE_FLASHCARDS = re.compile(
+    r"^(?:make|generate|create|show)\s+(?:my\s+)?flashcards"
+    r"(?:\s+(?:for|from)\s+(?:item\s+)?(?P<id>\d+))?$",
+    re.I,
+)
+_KNOWLEDGE_REVIEW = re.compile(
+    r"^review\s+flashcard\s+(?P<id>\d+)\s+"
+    r"(?P<verdict>correct|wrong|right|good)$",
+    re.I,
+)
+
+
 _VISION_READ = re.compile(
     r"^(?:read|ocr|extract(?:\s+text)?\s+from)\s+(?:the\s+)?"
     r"(?:image|picture|photo|screenshot)(?:\s+(?:at|from))?\s+"
@@ -2032,6 +2092,80 @@ _VISION_SEARCH = re.compile(
     r"(?P<query>.+)$",
     re.I,
 )
+
+
+def recognize_knowledge(text):
+  """Recognize personal knowledge, flashcard and study review requests."""
+  source = (text or "").strip().rstrip("?.!")
+  if not source:
+    return None
+  match = _KNOWLEDGE_ADD.match(source)
+  if match:
+    content = _clean(match.group("content"))
+    if len(content) >= 3:
+      return Intent("knowledge", 0.92, {"action": "add", "content": content})
+  match = _KNOWLEDGE_SEARCH.match(source)
+  if match:
+    query = _clean(match.group("query"))
+    if len(query) >= 2:
+      return Intent(
+          "knowledge", 0.91, {"action": "search", "query": query}
+      )
+  match = _KNOWLEDGE_SUMMARY.match(source)
+  if match:
+    topic = _clean(match.group("topic"))
+    if len(topic) >= 2:
+      return Intent(
+          "knowledge", 0.9, {"action": "summary", "topic": topic}
+      )
+  match = _KNOWLEDGE_CROSS.match(source)
+  if match:
+    query = _clean(match.group("query"))
+    if len(query) >= 2:
+      return Intent("knowledge", 0.9, {"action": "cross", "query": query})
+  match = _KNOWLEDGE_QUIZ.match(source)
+  if match:
+    topic = _clean(match.group("topic"))
+    return Intent("knowledge", 0.9, {"action": "quiz", "topic": topic})
+  if _KNOWLEDGE_DUE.match(source):
+    return Intent("knowledge", 0.9, {"action": "due"})
+  match = _KNOWLEDGE_PROGRESS.match(source)
+  if match:
+    return Intent(
+        "knowledge",
+        0.9,
+        {"action": "progress", "topic": _clean(match.group("topic") or "")},
+    )
+  match = _KNOWLEDGE_PLAN.match(source)
+  if match:
+    return Intent(
+        "knowledge",
+        0.9,
+        {"action": "plan", "days": match.group("days") or ""},
+    )
+  if _KNOWLEDGE_GRAPH.match(source):
+    return Intent("knowledge", 0.9, {"action": "graph"})
+  if _KNOWLEDGE_TOPICS.match(source):
+    return Intent("knowledge", 0.9, {"action": "topics"})
+  match = _KNOWLEDGE_FLASHCARDS.match(source)
+  if match:
+    return Intent(
+        "knowledge",
+        0.9,
+        {"action": "flashcards", "id": match.group("id") or ""},
+    )
+  match = _KNOWLEDGE_REVIEW.match(source)
+  if match:
+    return Intent(
+        "knowledge",
+        0.9,
+        {
+            "action": "review",
+            "id": match.group("id"),
+            "verdict": match.group("verdict").lower(),
+        },
+    )
+  return None
 
 
 def recognize_vision(text):
@@ -2718,6 +2852,9 @@ class IntentRouter:
     if intent is not None:
       return intent
     intent = recognize_todo(text)
+    if intent is not None:
+      return intent
+    intent = recognize_knowledge(text)
     if intent is not None:
       return intent
     intent = recognize_vision(text)

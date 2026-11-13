@@ -181,6 +181,7 @@ ROLES = {
                 "pomodoro_skip",
                 "summary_daily",
                 "summary_meeting",
+                "knowledge",
             }
         ),
         keywords=(
@@ -200,6 +201,11 @@ ROLES = {
             "pomodoro",
             "focus session",
             "time tracking",
+            "knowledge base",
+            "flashcard",
+            "flashcards",
+            "quiz me",
+            "study plan",
         ),
     ),
     "file": AgentRole(

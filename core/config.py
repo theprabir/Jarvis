@@ -189,6 +189,23 @@ class NotesConfig:
 
 
 @dataclass(frozen=True)
+class KnowledgeConfig:
+  enabled: bool = True
+  # Knowledge items, links, flashcards and review state share the assistant DB.
+  db: str = "data/jarvis.db"
+  max_items: int = 20_000
+  max_text_chars: int = 20_000
+  search_limit: int = 10
+  quiz_size: int = 5
+  plan_days: int = 7
+
+  @property
+  def resolved_db(self) -> Path:
+    path = Path(self.db)
+    return path if path.is_absolute() else (PROJECT_ROOT / path).resolve()
+
+
+@dataclass(frozen=True)
 class HabitsConfig:
   enabled: bool = True
   # Habits share the assistant database but use their own tables.
@@ -441,6 +458,7 @@ class Settings:
   tasks: TasksConfig
   productivity: ProductivityConfig
   notes: NotesConfig
+  knowledge: KnowledgeConfig
   habits: HabitsConfig
   goals: GoalsConfig
   time: TimeConfig
@@ -616,6 +634,27 @@ def _validate(settings):
       "[notes] search_limit must be 1-50",
   )
   _require(isinstance(notes.enabled, bool), "[notes] enabled must be true or false")
+
+  knowledge = settings.knowledge
+  _require(bool(knowledge.db), "[knowledge] db must not be empty")
+  _require(
+      1 <= knowledge.max_items <= 100_000,
+      "[knowledge] max_items must be 1-100000",
+  )
+  _require(
+      100 <= knowledge.max_text_chars <= 200_000,
+      "[knowledge] max_text_chars must be 100-200000",
+  )
+  _require(
+      1 <= knowledge.search_limit <= 50,
+      "[knowledge] search_limit must be 1-50",
+  )
+  _require(1 <= knowledge.quiz_size <= 50, "[knowledge] quiz_size must be 1-50")
+  _require(1 <= knowledge.plan_days <= 60, "[knowledge] plan_days must be 1-60")
+  _require(
+      isinstance(knowledge.enabled, bool),
+      "[knowledge] enabled must be true or false",
+  )
 
   habits = settings.habits
   _require(bool(habits.db), "[habits] db must not be empty")
@@ -997,6 +1036,9 @@ def load_settings(path=None):
           "productivity",
       ),
       notes=_build(NotesConfig, raw.get("notes", {}), "notes"),
+      knowledge=_build(
+          KnowledgeConfig, raw.get("knowledge", {}), "knowledge"
+      ),
       habits=_build(HabitsConfig, raw.get("habits", {}), "habits"),
       goals=_build(GoalsConfig, raw.get("goals", {}), "goals"),
       time=_build(TimeConfig, raw.get("time", {}), "time"),

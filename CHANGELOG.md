@@ -7,6 +7,70 @@ all feature sets in a phase increments the middle number and resets the patch.
 feature sets in this level increment the patch (v0.2.1, …). **v0.3.0** begins
 the advanced line with feature set 4.15.
 
+## v0.3.3 — 2026-11-13
+
+**Feature set 4.18 Knowledge and Learning**
+
+### Implemented functionality
+
+- **Personal knowledge base** — `core/knowledge.py` stores plain-text items in
+  `knowledge_items` with titles, sources, categories and topics, using the
+  existing `data/jarvis.db` rather than a new database or model.
+- **Automatic categorization and topics** — keyword scoring assigns one of
+  eight categories and extracts ranked topics; common stop words are ignored.
+- **Knowledge graph** — items that share a topic are linked in
+  `knowledge_links`, and the graph command reports nodes, links and shared
+  topics.
+- **Personal knowledge search** — SQLite FTS5 over titles and content, with a
+  ranked scan fallback and configurable result limits.
+- **Flashcard generation** — deterministic statement, definition and bullet
+  cards are generated once per item and deduplicated; no generation model is
+  loaded.
+- **Spaced repetition** — cards track ease, interval, reviews, correct answers,
+  streak and mastery. Correct reviews advance through 1, 3, 7, 14, 30, 60 and
+  120 day intervals; wrong reviews reset the streak and make the card due
+  immediately.
+- **Quizzes and study plans** — multiple-choice quizzes use other knowledge
+  items as distractors, expose an answer key and do not store a score; study
+  plans distribute due cards over a configurable number of days.
+- **Progress tracking** — item, card, review, accuracy, mastery and due counts,
+  with an optional topic filter.
+- **Topic summaries and cross-document reasoning** — summaries combine matching
+  knowledge items and topics; cross-source requests combine the knowledge base
+  with retrieved document passages from the existing document index.
+- **Notes reuse** — `/knowledge import notes` categorizes existing local notes
+  into knowledge items, skips duplicates and does not copy note storage.
+- **Controls** — `/knowledge` and `/kb` commands, natural requests such as
+  `add this to my knowledge base: ...`, `search my knowledge for ...`,
+  `what do I know about ...`, `quiz me on ...`, `what's due for review`,
+  `make flashcards`, `study plan for 5 days` and `show my knowledge graph`,
+  plus knowledge ownership in the productivity role.
+- Updated `README.md` and `/help` with knowledge commands, configuration and
+  limitations. No new runtime dependency, model server or vector index is used.
+
+### Files
+
+- `core/knowledge.py` — `KnowledgeService`, SQLite store, categorization,
+  graph, flashcard generation, review scheduling, quizzes, plans, summaries
+  and cross-document reasoning.
+- `core/config.py` — `KnowledgeConfig` validation and settings wiring.
+- `config/settings.toml` — `[knowledge]` section.
+- `core/assistant.py` — lazy knowledge service, `/knowledge` and `/kb`
+  commands, natural intent handling, formatting, help text and cleanup.
+- `core/intents.py` — deterministic knowledge request recognizer.
+- `core/roles.py` — productivity role owns knowledge and study requests.
+- `tests/test_knowledge.py` — categorization, search, graph, flashcards,
+  review scheduling, quizzes, plans, progress, summaries, note import,
+  item limits, natural intents and assistant commands.
+
+### Testing
+
+- Full suite: **617 tests, OK**.
+- `python -m compileall -q core config tests main.py` passed.
+- `python -m core.benchmark`: server started in 2.7 s; llama-server 1116.9 MB,
+  Python 35.7 MB, assistant total 1152.6 MB, peak 1157.5 MB (target
+  1300 MB); prefill 3.31 s, generation 3.51 s.
+
 ## v0.3.2 — 2026-11-13
 
 **Feature set 4.17 Visual Intelligence**

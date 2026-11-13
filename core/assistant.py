@@ -99,6 +99,12 @@ from core.mail import (
     parse_email_input,
 )
 from core.notes import NoteError, NoteService, format_note
+from core.knowledge import (
+    KnowledgeError,
+    KnowledgeService,
+    format_card,
+    format_item,
+)
 from core.productivity import (
     ProductivityError,
     ProductivityService,
@@ -280,7 +286,8 @@ HELP_TEXT = (
     " (show, approve, resume, cancel, history, plan TEXT, agent TEXT),"
     " /roles lists agent roles and /role NAME REQUEST forces one,"
     " /vision reads, summarizes, compares, indexes and troubleshoots local"
-    " images and screenshots, /intent TEXT"
+    " images and screenshots, /knowledge manages the personal knowledge"
+    " base, flashcards and study review, /intent TEXT"
     " shows the detected intent as JSON, /tools lists computer tools, /confirm"
     " and /cancel handle pending actions, /forget deletes saved history after"
     " confirmation, /documents manages local document reading, indexing,"
@@ -308,6 +315,7 @@ DOCUMENTS_HELP = (
 
 TODO_DISABLED = "Productivity is disabled, sir."
 NOTES_DISABLED = "Notes are disabled, sir."
+KNOWLEDGE_DISABLED = "The knowledge base is disabled, sir."
 HABITS_DISABLED = "Habit tracking is disabled, sir."
 GOALS_DISABLED = "Goal tracking is disabled, sir."
 TIME_DISABLED = "Time tracking is disabled, sir."
@@ -327,6 +335,14 @@ TODO_HELP = (
 NOTES_HELP = (
     "Note commands: list, add TEXT [| TITLE], show ID, search QUERY,"
     " edit ID content|title VALUE, remove ID."
+)
+
+KNOWLEDGE_HELP = (
+    "Knowledge commands: add TEXT [| TITLE], list [CATEGORY], show ID,"
+    " search QUERY, topics, graph, summary [TOPIC], cross QUERY,"
+    " flashcards [ITEM_ID], due [N], review CARD_ID correct|wrong,"
+    " quiz [N] [TOPIC], progress [TOPIC], plan [DAYS], import notes,"
+    " remove ID. Items are categorized and linked automatically."
 )
 
 HABITS_HELP = (
@@ -470,6 +486,7 @@ class Assistant:
     self._tasks = None
     self._productivity = None
     self._notes = None
+    self._knowledge = None
     self._habits = None
     self._goals = None
     self._time_tracking = None
@@ -730,6 +747,9 @@ class Assistant:
     if self._notes is not None:
       self._notes.close()
       self._notes = None
+    if self._knowledge is not None:
+      self._knowledge.close()
+      self._knowledge = None
     if self._habits is not None:
       self._habits.close()
       self._habits = None
@@ -831,6 +851,20 @@ class Assistant:
         log.error("Notes unavailable: %s", exc)
         return None
     return self._notes
+
+  def _get_knowledge(self):
+    """Build the knowledge base lazily over the shared document index."""
+    if not self._settings.knowledge.enabled:
+      return None
+    if self._knowledge is None:
+      try:
+        self._knowledge = KnowledgeService(
+            self._settings.knowledge, self._documents
+        )
+      except KnowledgeError as exc:
+        log.error("Knowledge base unavailable: %s", exc)
+        return None
+    return self._knowledge
 
   def _get_habits(self):
     """Build the habit service lazily and reuse the timer scheduler."""
@@ -1875,6 +1909,8 @@ class Assistant:
   def _answer_intent(self, intent, user_text=None):
     if intent.name == "vision":
       return self._vision_intent(intent)
+    if intent.name == "knowledge":
+      return self._knowledge_intent(intent)
     if intent.name == "time":
       now = datetime.now()
       return (
@@ -3546,6 +3582,254 @@ class Assistant:
     self._pending_tool = ("note_delete", arguments, user_text)
     return f"{description}. Please confirm to continue."
 
+  # -- personal knowledge and learning ----------------------------------
+
+  def _knowledge_command(self, text):
+    service = self._get_knowledge()
+    if service is None:
+      return KNOWLEDGE_DISABLED
+    body = text.split(maxsplit=1)[1].strip() if len(text.split()) > 1 else ""
+    if not body or body.lower() in {"help", "?"}:
+      return KNOWLEDGE_HELP
+    action, _separator, rest = body.partition(" ")
+    action = action.lower()
+    rest = rest.strip()
+    try:
+      if action in {"add", "save", "learn"}:
+        if not rest:
+          return "Usage: /knowledge add TEXT [| TITLE]"
+        title = ""
+        content = rest
+        if " | " in rest:
+          content, title = rest.split(" | ", 1)
+        item = service.add(content, title=title)
+        if item is None:
+          return "That item is already in the knowledge base, sir."
+        topics = ", ".join(item.topic_list) or "none"
+        return (
+            f"Knowledge #{item.id} saved as {item.category}."
+            f" Topics: {topics}."
+        )
+      if action in {"list", "ls", "all"}:
+        items = service.list(limit=30, category=rest)
+        if not items:
+          return "The knowledge base has no matching items, sir."
+        return "Knowledge base:\n" + "\n".join(
+            format_item(item) for item in items
+        )
+      if action in {"show", "get", "read"}:
+        identifier = self._knowledge_id(rest)
+        if identifier is None:
+          return "Usage: /knowledge show ID"
+        item = service.get(identifier)
+        if item is None:
+          return "There is no knowledge item with that id, sir."
+        topics = ", ".join(item.topic_list) or "none"
+        return (
+            f"Knowledge #{item.id}: {item.title}\n"
+            f"Category: {item.category}; topics: {topics}; source: {item.source}\n"
+            f"{item.content[:3000]}"
+        )
+      if action in {"search", "find"}:
+        if not rest:
+          return "Usage: /knowledge search QUERY"
+        items = service.search(rest)
+        if not items:
+          return f"No knowledge matched {rest!r}, sir."
+        return f"Knowledge matching {rest!r}:\n" + "\n".join(
+            format_item(item) for item in items
+        )
+      if action in {"topics", "topic"}:
+        topics = service.topics()
+        if not topics:
+          return "The knowledge base has no topics yet, sir."
+        return "Knowledge topics:\n" + "\n".join(
+            f"- {topic}: {count} item(s)" for topic, count in topics
+        )
+      if action in {"graph", "links"}:
+        items, edges = service.graph()
+        if not items:
+          return "The knowledge graph is empty, sir."
+        names = {item.id: item.title for item in items}
+        lines = [f"Knowledge graph: {len(items)} node(s), {len(edges)} link(s)."]
+        for edge in edges[:25]:
+          lines.append(
+              f"- {names.get(edge['source_id'], edge['source_id'])}"
+              f" <-> {names.get(edge['target_id'], edge['target_id'])}"
+              f" ({edge['topic']})"
+          )
+        return "\n".join(lines)
+      if action in {"summary", "summarize"}:
+        result = service.summary(rest)
+        lines = [f"Knowledge summary: {rest or 'all items'}", result["summary"]]
+        if result.get("topics"):
+          lines.append("Topics: " + ", ".join(result["topics"]))
+        if result["items"]:
+          lines.append(
+              "Sources: "
+              + "; ".join(item.title for item in result["items"][:8])
+          )
+        return "\n".join(lines)
+      if action in {"cross", "reason", "compare"}:
+        if not rest:
+          return "Usage: /knowledge cross QUERY"
+        result = service.cross(rest)
+        lines = [f"Cross-source view: {rest}", result["summary"]]
+        if result.get("topics"):
+          lines.append("Related topics: " + ", ".join(result["topics"]))
+        if result["knowledge"]:
+          lines.append(
+              "Knowledge sources: "
+              + "; ".join(item.title for item in result["knowledge"])
+          )
+        if result["document_hits"]:
+          lines.append("Document evidence:")
+          for hit in result["document_hits"][:4]:
+            lines.append(
+                f"- {hit['title']}: {hit['text'][:180]}"
+            )
+        return "\n".join(lines)
+      if action in {"flashcards", "cards", "generate"}:
+        item_id = self._knowledge_id(rest) if rest.strip().isdigit() else None
+        cards = service.flashcards(item_id)
+        if not cards:
+          return "There are no flashcards to show, sir."
+        return self._knowledge_cards_text(service, cards)
+      if action == "due":
+        limit = int(rest) if rest.isdigit() else 20
+        cards = service.due(limit)
+        if not cards:
+          return "No flashcards are due for review, sir."
+        return "Due for review:\n" + self._knowledge_cards_text(service, cards)
+      if action in {"review", "answer"}:
+        parts = rest.split()
+        if len(parts) < 2 or not parts[0].isdigit():
+          return "Usage: /knowledge review CARD_ID correct|wrong"
+        verdict = parts[1].lower()
+        card = service.review(
+            int(parts[0]), verdict in {"correct", "right", "yes", "good", "knew"}
+        )
+        return (
+            f"Flashcard #{card.id} reviewed."
+            f" Next due {card.due_at.replace('T', ' ')[:16]};"
+            f" interval {card.interval_days} day(s);"
+            f" mastery {round(card.mastery * 100)}%."
+        )
+      if action in {"quiz", "test"}:
+        pieces = rest.split(maxsplit=1)
+        count = None
+        topic = rest
+        if pieces and pieces[0].isdigit():
+          count = int(pieces[0])
+          topic = pieces[1] if len(pieces) > 1 else ""
+        questions = service.quiz(count, topic)
+        if not questions:
+          return "There is nothing to quiz yet, sir."
+        lines = ["Knowledge quiz:"]
+        for index, question in enumerate(questions, 1):
+          lines.append(f"{index}. {question['question']}")
+          for choice_index, choice in enumerate(question["choices"]):
+            lines.append(f"   {chr(65 + choice_index)}. {choice}")
+        lines.append("Answer key: " + ", ".join(
+            f"{index}={question['answer']}"
+            for index, question in enumerate(questions, 1)
+        ))
+        return "\n".join(lines)
+      if action in {"progress", "stats"}:
+        data = service.progress(rest)
+        return (
+            "Knowledge progress\n"
+            f"Items: {data['items']}; cards: {data['cards']};"
+            f" reviews: {data['reviews']}; accuracy: {data['accuracy']}%;"
+            f" average mastery: {data['mastery']}%; due: {data['due']}."
+        )
+      if action in {"plan", "study"}:
+        days = int(rest) if rest.isdigit() else None
+        plan = service.study_plan(days)
+        lines = ["Study plan:"]
+        for day in plan:
+          titles = "; ".join(
+              card.question for card in day["cards"][:3]
+          )
+          lines.append(
+              f"- {day['date']}: {len(day['cards'])} card(s),"
+              f" {day['minutes']} min" + (f" — {titles}" if titles else "")
+          )
+        return "\n".join(lines)
+      if action == "import":
+        if rest.lower() not in {"notes", "note"}:
+          return "Usage: /knowledge import notes"
+        result = service.import_notes(self._get_notes())
+        return (
+            f"Imported {result['added']} note(s);"
+            f" skipped {result['skipped']} already present."
+        )
+      if action in {"remove", "delete", "rm"}:
+        identifier = self._knowledge_id(rest)
+        if identifier is None:
+          return "Usage: /knowledge remove ID"
+        item = service.delete(identifier)
+        if item is None:
+          return "There is no knowledge item with that id, sir."
+        return f"Knowledge #{item.id} removed: {item.title}."
+    except (KnowledgeError, ValueError) as exc:
+      return f"I couldn't update the knowledge base, sir: {exc}."
+    return KNOWLEDGE_HELP
+
+  def _knowledge_id(self, value):
+    text = str(value or "").strip().lstrip("#")
+    return int(text) if text.isdigit() else None
+
+  def _knowledge_cards_text(self, service, cards):
+    lines = []
+    for card in cards[:15]:
+      lines.append(format_card(card, service.get(card.item_id)))
+    return "\n".join(lines)
+
+  def _knowledge_intent(self, intent):
+    entities = intent.entities
+    action = str(entities.get("action") or "list").lower()
+    if action == "add":
+      return self._knowledge_command(
+          f"/knowledge add {entities.get('content', '')}"
+      )
+    if action == "search":
+      return self._knowledge_command(
+          f"/knowledge search {entities.get('query', '')}"
+      )
+    if action == "summary":
+      return self._knowledge_command(
+          f"/knowledge summary {entities.get('topic', '')}"
+      )
+    if action == "cross":
+      return self._knowledge_command(
+          f"/knowledge cross {entities.get('query', '')}"
+      )
+    if action == "quiz":
+      topic = entities.get("topic", "")
+      return self._knowledge_command(f"/knowledge quiz {topic}".strip())
+    if action == "due":
+      return self._knowledge_command("/knowledge due")
+    if action == "progress":
+      topic = entities.get("topic", "")
+      return self._knowledge_command(f"/knowledge progress {topic}".strip())
+    if action == "plan":
+      days = entities.get("days", "")
+      return self._knowledge_command(f"/knowledge plan {days}".strip())
+    if action == "graph":
+      return self._knowledge_command("/knowledge graph")
+    if action == "topics":
+      return self._knowledge_command("/knowledge topics")
+    if action == "flashcards":
+      item_id = entities.get("id", "")
+      return self._knowledge_command(f"/knowledge flashcards {item_id}".strip())
+    if action == "review":
+      return self._knowledge_command(
+          f"/knowledge review {entities.get('id', '')}"
+          f" {entities.get('verdict', '')}".strip()
+      )
+    return self._knowledge_command("/knowledge list")
+
   def _notes_command(self, text):
     service = self._get_notes()
     if service is None:
@@ -4771,6 +5055,8 @@ class Assistant:
       return self._memory_command(parts[1:])
     if command in {"/notes", "/note"}:
       return self._notes_command(text)
+    if command in {"/knowledge", "/kb"}:
+      return self._knowledge_command(text)
     if command in {"/habits", "/habit"}:
       return self._habit_command(text)
     if command in {"/goals", "/goal"}:

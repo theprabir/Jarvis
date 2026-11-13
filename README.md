@@ -7,12 +7,13 @@ interface; deterministic Python modules do the audio, routing and tool work.
 
 **Current status:** Phase 1 (stabilization) and feature sets **4.1 Voice
 Interface** through **4.14 Application Intelligence** complete, plus optional
-document OCR with confidence warnings, currently **v0.3.2** in the
+document OCR with confidence warnings, currently **v0.3.3** in the
 advanced feature line. v0.2.11 switches the local model to IBM
 Granite 4.0 1B Instruct Q4_K_M; v0.2.12 keeps the prompt prefix stable so
 llama.cpp can reuse its cache across turns; v0.3.0 adds the constrained
 autonomous task agent; v0.3.1 adds specialized logical agent roles; v0.3.2
-adds local visual intelligence. Phase 4.14 adds active-window detection,
+adds local visual intelligence; v0.3.3 adds a personal knowledge base with
+flashcards and spaced review. Phase 4.14 adds active-window detection,
 clipboard assistance, confirmed browser actions, page summaries, screenshot
 OCR and application documentation search.
 JARVIS listens through the
@@ -37,7 +38,9 @@ with streaks and recurring reminders, goals with numeric progress and target
 dates, local time tracking with daily totals, local calendar events with
 daily agendas, local email drafts with optional connected-account search and
 sending, Pomodoro work/break phases, bounded clipboard history, and daily or
-meeting summaries (see
+meeting summaries. The 4.18 knowledge layer adds a local personal knowledge
+base, automatic keyword categorization, a topic graph, deterministic
+flashcards and quizzes, spaced review and study planning (see
 `PLANS-STACK-FEATURES.md`, `CHANGELOG.md`).
 
 ## Requirements
@@ -93,6 +96,7 @@ All runtime settings live in `config/settings.toml`:
 | `[tasks]` | Durable task database, step limit, retries, parallel workers and approval |
 | `[productivity]` | Local to-do database, default priority and list limits |
 | `[notes]` | Local note database, content limits and search result limits |
+| `[knowledge]` | Knowledge database, item/text limits, search, quiz and plan sizes |
 | `[habits]` | Daily habit database and habit-count limit |
 | `[goals]` | Goal database and goal-count limit |
 | `[time]` | Time-entry database and time-entry limit |
@@ -456,6 +460,53 @@ db = "data/jarvis.db"
 max_items = 5000
 max_content_chars = 10000
 search_limit = 10
+```
+
+### Knowledge and learning
+
+The knowledge base stores personal study material in `knowledge_items`,
+`knowledge_links` and `flashcards` inside the existing `data/jarvis.db`, with
+a `knowledge_fts` index for search. Adding an item extracts keywords, selects
+one of eight categories (`Programming`, `Science`, `History`, `Productivity`,
+`Business`, `Health`, `Personal`, `General`), links it to items that share
+topics and can generate flashcards. It reuses the notes and document services
+rather than duplicating their storage: `/knowledge import notes` imports each
+note once, and `/knowledge cross` combines knowledge hits with document
+passages.
+
+| Capability | Behaviour |
+| --- | --- |
+| Add | `/knowledge add TEXT [\| TITLE]`; category and topics are automatic |
+| List / detail | `/knowledge list [CATEGORY]`, `/knowledge show ID` |
+| Search | `/knowledge search QUERY`, or `search my knowledge for QUERY` |
+| Topics and graph | `/knowledge topics`, `/knowledge graph` |
+| Summary | `/knowledge summary [TOPIC]` |
+| Cross-document reasoning | `/knowledge cross QUERY` combines knowledge and indexed documents |
+| Flashcards | `/knowledge flashcards [ITEM_ID]` generates deterministic question/answer cards |
+| Review | `/knowledge due [N]`, `/knowledge review CARD_ID correct\|wrong` |
+| Quiz | `/knowledge quiz [N] [TOPIC]` with multiple-choice questions and an answer key |
+| Progress | `/knowledge progress [TOPIC]` reports items, cards, reviews, accuracy, mastery and due count |
+| Study plan | `/knowledge plan [DAYS]` spreads due cards over the next days |
+| Import notes | `/knowledge import notes` categorizes existing notes and skips duplicates |
+| Remove | `/knowledge remove ID` |
+
+Natural requests also work: `add this to my knowledge base: ...`,
+`what do I know about Python`, `quiz me on Python`, `what's due for review`,
+`make flashcards`, `study plan for 5 days` and `show my knowledge graph`.
+Review uses a small SM-2-style schedule over 1, 3, 7, 14, 30, 60 and 120 day
+intervals; a correct answer lengthens the interval and a wrong answer brings
+the card back immediately. No embedding model, vector database or additional
+model server is loaded.
+
+```toml
+[knowledge]
+enabled = true
+db = "data/jarvis.db"
+max_items = 20000
+max_text_chars = 20000
+search_limit = 10
+quiz_size = 5
+plan_days = 7
 ```
 
 ### Habits
@@ -1162,6 +1213,7 @@ core/memory.py          Layered memory store, FTS5 search, episodes, ranking
 core/learning.py        Candidate extraction, importance, episodes, short-term buffer
 core/tasks.py           Durable plans, execution, approval, checkpoints, history
 core/notes.py           Local notes, FTS5 search, scan fallback and formatting
+core/knowledge.py       Knowledge items, categories, graph, flashcards and review
 tools/notes.py          Note tool handlers for the validated registry
 core/habits.py          Daily habits, streaks, parsing and reminder scheduling
 tools/habits.py         Habit tool handlers for the validated registry
@@ -1235,6 +1287,12 @@ logs/                   Runtime logs (git-ignored)
 - Note search is lexical FTS5 with no embeddings; a search that uses
   different words from the note can miss it. Notes are not versioned, and
   deleting one is permanent after confirmation.
+- Knowledge categorization, topic extraction, graph links and summaries are
+  keyword and FTS heuristics, not semantic embeddings. Shared common words can
+  create a weak link, and a paraphrase that shares no keywords can be missed.
+  Flashcards come from statements and bullet points, so narrative prose or
+  tables may produce fewer cards. Quizzes show their answer key and do not
+  record a score. Review scheduling uses the computer's local time.
 - Habits are daily-only and keep one check-in per local date. Weekly targets,
   pauses, multiple check-ins per day and custom time zones are not supported.
   Streaks use the computer's local date, so travel can shift a day boundary.

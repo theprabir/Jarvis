@@ -177,6 +177,18 @@ max_items = 5000
 max_content_chars = 10000
 search_limit = 10
 
+[knowledge]
+# Local personal knowledge base, topic graph, flashcards and spaced review.
+# Items share the assistant database but use their own tables.
+enabled = true
+db = "data/jarvis.db"
+max_items = 20000
+max_text_chars = 20000
+search_limit = 10
+# Default quiz length and study-plan horizon.
+quiz_size = 5
+plan_days = 7
+
 [habits]
 # Daily habits with check-in streaks and optional recurring reminders.
 # Habits share the assistant database but use their own tables.

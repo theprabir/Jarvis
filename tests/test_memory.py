@@ -239,14 +239,17 @@ class AssistantMemoryTests(unittest.TestCase):
     listing = assistant.reply("what do you remember")
     self.assertIn("temporary", listing)
 
-  def test_memories_reach_the_system_prompt(self):
+  def test_memories_reach_the_trailing_context(self):
     assistant, client = make_assistant(self.tmp.name)
     self.addCleanup(assistant.close)
     assistant.reply("remember my name is Alex")
     assistant.reply("hello")
-    system = client.calls[-1]["messages"][0]["content"]
-    self.assertIn("Known about the user", system)
-    self.assertIn("my name is Alex", system)
+    messages = client.calls[-1]["messages"]
+    self.assertNotIn("Known about the user", messages[0]["content"])
+    self.assertEqual(messages[-2]["role"], "system")
+    self.assertIn("Known about the user", messages[-2]["content"])
+    self.assertIn("my name is Alex", messages[-2]["content"])
+    self.assertEqual(messages[-1], {"role": "user", "content": "hello"})
 
   def test_delete_by_description(self):
     assistant, _client = make_assistant(self.tmp.name)

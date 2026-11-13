@@ -85,18 +85,8 @@ class Conversation:
     """Reply limit for the active answer mode."""
     return getattr(self._config, f"{self.mode}_max_tokens")
 
-  def messages(self, system_prompt):
-    """Build the chat messages for the next request (without the new turn)."""
-    system = f"{system_prompt.strip()} {MODE_INSTRUCTIONS[self.mode]}".strip()
-    messages = [{"role": "system", "content": system}]
-    if self.summary:
-      messages.append(
-          {
-              "role": "system",
-              "content": "Summary of the earlier conversation: " + self.summary,
-          }
-      )
-
+  def context_turns(self):
+    """Return the stored turns that fit in the configured prompt budget."""
     budget = self._config.max_context_chars
     selected = []
     for turn in reversed(self.turns):
@@ -105,8 +95,18 @@ class Conversation:
         break
       selected.append(turn)
       budget -= cost
+    return list(reversed(selected))
 
-    for turn in reversed(selected):
+  def messages(self, system_prompt):
+    """Build the stable chat prefix for the next request.
+
+    The system prompt and stored turns are kept byte-identical between calls so
+    llama.cpp can reuse its prompt cache. Mutable context (the summary and
+    learned memory) is appended as a trailing system message by the assistant.
+    """
+    system = f"{system_prompt.strip()} {MODE_INSTRUCTIONS[self.mode]}".strip()
+    messages = [{"role": "system", "content": system}]
+    for turn in self.context_turns():
       messages.append({"role": "user", "content": turn.user})
       messages.append({"role": "assistant", "content": turn.assistant})
     return messages

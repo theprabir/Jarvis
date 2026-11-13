@@ -47,11 +47,17 @@ def make_store(tmp):
   return MemoryStore(Path(tmp) / "memory.db")
 
 
-def make_assistant(tmp, auto_learn=True, replies=("Noted.",)):
+def make_assistant(
+    tmp, auto_learn=True, replies=("Noted.",), conversation_enabled=False
+):
   base = load_settings()
   settings = dataclasses.replace(
       base,
-      conversation=dataclasses.replace(base.conversation, enabled=False),
+      conversation=dataclasses.replace(
+          base.conversation,
+          enabled=conversation_enabled,
+          history_db=str(Path(tmp) / "history.db"),
+      ),
       memory=dataclasses.replace(
           base.memory,
           enabled=True,
@@ -233,6 +239,21 @@ class StoreLearningTests(unittest.TestCase):
     self.assertIn("planning the budget", block)
     self.assertLessEqual(len(block), 700)
 
+  def test_context_block_can_exclude_episodes(self):
+    self.store.add_episode("s1", "Discussed: planning the budget", "budget")
+    block = self.store.context_block(episode_limit=0)
+    self.assertEqual(block, "")
+
+  def test_context_block_skips_facts_already_in_the_transcript(self):
+    self.store.add("preference", "my name is Alex", subject="name")
+    self.store.add("fact", "the office is in Kolkata", subject="office")
+    block = self.store.context_block(
+        query="alex kolkata",
+        exclude_text="My name is Alex. The office is closed today.",
+    )
+    self.assertNotIn("my name is Alex", block)
+    self.assertIn("the office is in Kolkata", block)
+
   def test_context_block_stays_within_budget(self):
     for index in range(10):
       self.store.add(
@@ -258,9 +279,14 @@ class AssistantLearningTests(unittest.TestCase):
     self.tmp = tempfile.TemporaryDirectory()
     self.addCleanup(self.tmp.cleanup)
 
-  def make(self, auto_learn=True, replies=("Noted.",)):
+  def make(
+      self, auto_learn=True, replies=("Noted.",), conversation_enabled=False
+  ):
     assistant, client = make_assistant(
-        self.tmp.name, auto_learn=auto_learn, replies=replies
+        self.tmp.name,
+        auto_learn=auto_learn,
+        replies=replies,
+        conversation_enabled=conversation_enabled,
     )
     self.addCleanup(assistant.close)
     return assistant, client
@@ -362,14 +388,29 @@ class AssistantLearningTests(unittest.TestCase):
     self.assertEqual(assistant._memory.episode_count(), 0)
     self.assertEqual(assistant._memory.list(source="learned"), [])
 
+  def test_transcript_replaces_recent_episodes_in_context(self):
+    assistant, client = self.make(conversation_enabled=True)
+    assistant.reply("My name is Alex.")
+    assistant.reply("Tell me about the ocean.")
+    messages = client.calls[-1]["messages"]
+    self.assertFalse(any(
+        "Recent events" in item["content"] for item in messages
+    ))
+    # The name is already verbatim in the transcript, so it is not repeated.
+    self.assertFalse(any(
+        "Known about the user" in item["content"] for item in messages
+    ))
+
   def test_session_context_reaches_the_prompt(self):
     assistant, client = self.make()
     assistant.reply("My name is Alex.")
     assistant.reply("Tell me about the ocean.")
-    system = client.calls[-1]["messages"][0]["content"]
-    self.assertIn("Known about the user", system)
-    self.assertIn("My name is Alex", system)
-    self.assertIn("Session so far", system)
+    messages = client.calls[-1]["messages"]
+    self.assertNotIn("Known about the user", messages[0]["content"])
+    context = messages[-2]["content"]
+    self.assertIn("Known about the user", context)
+    self.assertIn("My name is Alex", context)
+    self.assertIn("Session so far", context)
 
 
 if __name__ == "__main__":

@@ -123,6 +123,9 @@ class ConversationTests(unittest.TestCase):
     ]
     self.assertEqual(len(users), 1)
     self.assertEqual(users[0]["content"], "c" * 40)
+    self.assertEqual(
+        [turn.user for turn in conversation.context_turns()], ["c" * 40]
+    )
 
   def test_summary_replaces_old_turns(self):
     conversation = Conversation(
@@ -137,13 +140,11 @@ class ConversationTests(unittest.TestCase):
     self.assertTrue(changed)
     self.assertEqual(len(conversation.turns), 1)
     self.assertIn("SUMMARY", conversation.summary)
-    system = [
-        message["content"]
-        for message in conversation.messages("S")
-        if message["role"] == "system"
-    ]
-    self.assertTrue(any("Summary of the earlier conversation" in text
-                        for text in system))
+    messages = conversation.messages("S")
+    self.assertFalse(any(
+        "Summary of the earlier conversation" in message["content"]
+        for message in messages
+    ))
 
   def test_failed_summarizer_falls_back_to_extract(self):
     conversation = Conversation(
@@ -186,6 +187,27 @@ class AssistantTests(unittest.TestCase):
     assistant = Assistant(settings, client=client)
     self.addCleanup(assistant.close)
     return assistant, client
+
+  def test_memory_stays_after_the_cached_prompt_prefix(self):
+    assistant, client = self.make(replies=("One.", "Two."))
+    blocks = iter([
+        "Known about the user:\n- my name is Alex",
+        "Known about the user:\n- my name is Alex\n- I use Python",
+    ])
+    assistant._memory_context = lambda _text="": next(blocks)
+
+    assistant.reply("first question")
+    assistant.reply("second question")
+
+    first = client.calls[0]["messages"]
+    second = client.calls[1]["messages"]
+    self.assertEqual(first[0], second[0])
+    self.assertNotIn("Known about the user", second[0]["content"])
+    self.assertEqual(second[1]["content"], "first question")
+    self.assertEqual(second[2]["role"], "assistant")
+    self.assertEqual(second[-2]["role"], "system")
+    self.assertIn("I use Python", second[-2]["content"])
+    self.assertEqual(second[-1], {"role": "user", "content": "second question"})
 
   def test_follow_up_sends_previous_turn(self):
     assistant, client = self.make(replies=("Noted, Alex.", "Alex."))
@@ -252,7 +274,9 @@ class AssistantTests(unittest.TestCase):
     assistant, client = self.make(enabled=False)
     assistant.reply("first")
     assistant.reply("second")
-    self.assertEqual(len(client.calls[1]["messages"]), 2)
+    messages = client.calls[1]["messages"]
+    self.assertEqual(messages[-1], {"role": "user", "content": "second"})
+    self.assertFalse(any(item["role"] == "assistant" for item in messages))
     self.assertEqual(assistant.conversation.turns, [])
     self.assertIsNone(assistant._store)
 
@@ -284,9 +308,14 @@ class AssistantTests(unittest.TestCase):
     # The third request first compresses the two stored turns.
     self.assertEqual(assistant.reply("third question"), "Answer three.")
     request = client.calls[-1]["messages"]
-    system = [message["content"] for message in request
-              if message["role"] == "system"]
-    self.assertTrue(any("Compact summary." in text for text in system))
+    self.assertEqual(request[0]["role"], "system")
+    self.assertNotIn("Compact summary.", request[0]["content"])
+    self.assertEqual(request[-2]["role"], "system")
+    self.assertIn(
+        "Summary of the earlier conversation: Compact summary.",
+        request[-2]["content"],
+    )
+    self.assertEqual(request[-1]["role"], "user")
     # One turn kept verbatim plus the new exchange.
     self.assertEqual(len(assistant.conversation.turns), 2)
 

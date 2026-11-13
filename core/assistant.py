@@ -592,9 +592,12 @@ class Assistant:
       conversation.maybe_summarize(self._summarize)
 
     messages = conversation.messages(SYSTEM_PROMPT)
-    memory_block = self._memory_context()
-    if memory_block:
-      messages[0]["content"] += "\n\n" + memory_block
+    context = self._turn_context(text)
+    if context:
+      # This message is not stored in the transcript. Keeping it immediately
+      # before the newest user message means a changed memory or summary only
+      # invalidates the previous exchange, not the whole conversation.
+      messages.append({"role": "system", "content": context})
     messages.append({"role": "user", "content": text})
     answer, ok = self._complete(messages, conversation.max_tokens())
 
@@ -4187,18 +4190,47 @@ class Assistant:
 
   # -- memory -----------------------------------------------------------
 
-  def _memory_context(self):
+  def _turn_context(self, current_text=""):
+    """Build mutable context for the newest user message.
+
+    This must stay after the stable system prompt and stored history. Putting
+    it earlier changes the cached prefix and makes llama.cpp reprocess the
+    whole conversation whenever memory or the summary changes.
+    """
+    parts = []
+    if self.conversation.summary:
+      parts.append(
+          "Summary of the earlier conversation: " + self.conversation.summary
+      )
+    memory_block = self._memory_context(current_text)
+    if memory_block:
+      parts.append(memory_block)
+    return "\n\n".join(parts)
+
+  def _memory_context(self, current_text=""):
     """Reconstruct prompt context from memory plus the current session."""
     if self._memory is None:
       return ""
     query = " ".join(
         text for text, _answer in self._session.recent(4)
     )
+    # The transcript already contains the recent exchanges. Episodic memory
+    # is a summary of those same exchanges, so injecting it again only adds
+    # prompt tokens and a cache-invalidating suffix. Keep episodes for the
+    # history-disabled case, where they are the only continuity available.
+    episode_limit = 2
+    if self._config.enabled and self.conversation.has_history:
+      episode_limit = 0
+    transcript = " ".join(
+        f"{turn.user} {turn.assistant}"
+        for turn in self.conversation.context_turns()
+    )
     block = self._memory.context_block(
         query=query,
         limit=self._settings.memory.inject_items,
-        episode_limit=2,
+        episode_limit=episode_limit,
         max_chars=700,
+        exclude_text=f"{transcript} {current_text}".strip(),
     )
     if not self._config.enabled and len(self._session) >= 1:
       summary = self._session.summary(240)

@@ -7,6 +7,39 @@ all feature sets in a phase increments the middle number and resets the patch.
 feature sets in this level increment the patch (v0.2.1, …), and completing the
 level increments the middle number.
 
+## v0.2.12 — 2026-11-13
+
+**Prompt-cache-stable context and faster multi-turn replies**
+
+- Kept the system prompt and stored transcript byte-identical between turns so
+  llama.cpp can reuse its prompt cache instead of reprocessing the whole
+  conversation.
+- Moved the conversation summary and learned memory into one trailing system
+  message immediately before the newest user message. A changed memory or
+  summary now invalidates only the previous exchange, not the full transcript.
+- Stopped injecting episodic summaries when the transcript is already enabled;
+  those episodes repeat recent turns. Episodes remain available when history
+  is disabled and through `/memory episodes`.
+- Omit memory facts already present verbatim in the current transcript, avoiding
+  duplicate prompt tokens while keeping the fact available to the model.
+- Added regression tests for cache-stable message ordering, trailing context,
+  episode suppression and duplicate-fact filtering.
+- Updated `README.md` to describe the prompt layout and measured latency.
+- This release records a performance fix; no feature set was completed.
+
+### Testing
+
+- Two real nine-prompt Granite runs with temporary databases: cold first
+  reply 12.3–18.8 s; cached model turns 4.1–15.5 s depending on answer length
+  and CPU state. The memory follow-up fell from **60.60 s to 5.48–6.28 s**
+  (about 10–11× faster); only 24 prompt tokens were evaluated instead of 391,
+  and prefill fell from 56.85 s to 3.05–4.09 s.
+- `python -m core.benchmark`: server started in 3.2 s; llama-server 1116.9 MB,
+  Python 35.8 MB, peak 1157.7 MB (target 1300 MB).
+- Full suite: **574 tests, OK**.
+- `python -m compileall -q core tools web config tests main.py` passed.
+- `git diff --check` passed.
+
 ## v0.2.11 — 2026-11-12
 
 **Runtime model switch: IBM Granite 4.0 1B Instruct Q4_K_M**

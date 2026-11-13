@@ -146,6 +146,11 @@ def _terms(text):
           if len(word) > 1]
 
 
+def _normalise_text(text):
+  """Lowercase words for a punctuation-insensitive transcript comparison."""
+  return " ".join(WORD.findall(str(text or "").lower()))
+
+
 def _row_dict(row):
   keys = (
       "id",
@@ -490,11 +495,31 @@ class MemoryStore:
     return items[: max(1, int(limit))]
 
   def context_block(
-      self, query=None, limit=6, episode_limit=2, max_chars=700
+      self,
+      query=None,
+      limit=6,
+      episode_limit=2,
+      max_chars=700,
+      exclude_text="",
   ):
-    """Reconstruct prompt context from semantic and episodic memory."""
+    """Reconstruct prompt context from semantic and episodic memory.
+
+    ``exclude_text`` lets callers omit facts already present in the current
+    transcript. Repeating them costs prompt tokens on every turn without
+    adding information.
+    """
     memories = self.ranked(query, limit)
-    episodes = self.recent_episodes(episode_limit, query)
+    episodes = (
+        self.recent_episodes(episode_limit, query)
+        if int(episode_limit) > 0
+        else []
+    )
+    if exclude_text:
+      transcript = _normalise_text(exclude_text)
+      memories = [
+          item for item in memories
+          if _normalise_text(item["content"]) not in transcript
+      ]
     if not memories and not episodes:
       return ""
     lines = []

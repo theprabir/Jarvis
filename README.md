@@ -7,9 +7,10 @@ interface; deterministic Python modules do the audio, routing and tool work.
 
 **Current status:** Phase 1 (stabilization) and feature sets **4.1 Voice
 Interface** through **4.14 Application Intelligence** complete, plus optional
-document OCR with confidence warnings, currently **v0.2.11** in the
+document OCR with confidence warnings, currently **v0.2.12** in the
 moderate-advanced feature line. v0.2.11 switches the local model to IBM
-Granite 4.0 1B Instruct Q4_K_M. Phase 4.14 adds active-window detection,
+Granite 4.0 1B Instruct Q4_K_M; v0.2.12 keeps the prompt prefix stable so
+llama.cpp can reuse its cache across turns. Phase 4.14 adds active-window detection,
 clipboard assistance, confirmed browser actions, page summaries, screenshot
 OCR and application documentation search.
 JARVIS listens through the
@@ -135,6 +136,16 @@ pronouns and references resolve against what was already said. Older exchanges
 are compressed into a short summary instead of being dropped; if that summary
 request fails, an extractive summary is used. Only `max_context_chars` of
 transcript is sent, which keeps requests inside the 2048-token context.
+
+The system prompt and stored transcript stay byte-identical between turns. The
+mutable summary and learned memory are sent in one trailing system message
+immediately before the newest user message, so llama.cpp can reuse its prompt
+cache. A memory change only reprocesses the previous exchange, not the whole
+conversation. Facts already present in the transcript and recent episodic
+summaries are not repeated; episodes are still used when history is disabled
+and remain available through `/memory episodes`. On the nine-prompt benchmark,
+cached model turns took 4.1–15.5 seconds depending on answer length, and the
+memory follow-up took 5.5–6.3 seconds instead of 60.6 seconds.
 
 Answer styles are set by `mode`, or at runtime with `/mode`:
 
@@ -823,7 +834,10 @@ Categories are inferred (`preference`, `fact`, `path`, `folder`, `website`,
 `task`, `general`) and can be set explicitly with `/memory add category text`.
 Importance is scored from 1 to 5, and retrieval ranks by term overlap,
 importance, recency and a preference boost. The best `inject_items` memories
-and the two most relevant episodes are combined into a bounded prompt block.
+are combined into a bounded prompt block. When the transcript is enabled,
+recent episodic summaries are omitted because the transcript already contains
+those turns; when history is disabled, the two most relevant episodes are
+included. Memories already present in the current transcript are not repeated.
 Memories live in `data/jarvis.db` next to the conversation history, with SQLite
 FTS5 search when the bundled SQLite provides it and a scored scan otherwise.
 Duplicate persistent memories are refreshed instead of duplicated.

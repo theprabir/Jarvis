@@ -7,6 +7,59 @@ all feature sets in a phase increments the middle number and resets the patch.
 feature sets in this level increment the patch (v0.2.1, …). **v0.3.0** begins
 the advanced line with feature set 4.15.
 
+## v0.3.2 — 2026-11-13
+
+**Feature set 4.17 Visual Intelligence**
+
+### Implemented functionality
+
+- **Local image and screenshot analysis** — `core/vision.py` reads image
+  metadata, dimensions, mode, EXIF, colour palette, brightness, contrast and
+  large edge-rich regions without uploading the image.
+- **OCR and image-to-text** — reuses the existing Windows OCR path through
+  `DocumentService`; `ocr_enabled` and the configured language pack still
+  control recognition.
+- **Summaries and troubleshooting** — deterministic OCR summaries, error-word
+  detection, low-contrast/resolution checks and practical screenshot guidance.
+- **UI region hints** — a small Pillow/numpy edge and connected-region pass
+  suggests large interface regions; it is explicitly a heuristic, not a
+  semantic detector.
+- **Visual comparison** — 64x64 grayscale pixel similarity plus OCR line and
+  vocabulary differences.
+- **Chart and diagram interpretation** — extracts numeric values, labels,
+  trend hints, region distribution and layout labels from OCR and image
+  structure.
+- **Local image search** — indexes image OCR text and summaries in a SQLite
+  FTS5 table in the existing assistant database; `vision search QUERY` returns
+  local paths and snippets.
+- **Controls** — `/vision` and `/image` commands, plus natural requests such as
+  `read the image at file.png`, `summarize the screenshot at file.png`,
+  `compare images a.png and b.png`, `analyze my screen` and
+  `search images for QUERY`.
+- No visual model, extra model server, vector database or new runtime
+  dependency is loaded. This follows the lightweight-first requirement.
+
+### Files
+
+- `core/vision.py` — `VisionService`, image index, analysis and formatting.
+- `core/assistant.py` — `/vision` and `/image` commands, lazy service, natural
+  vision intent handling and help text.
+- `core/intents.py` — local vision request recognizer.
+- `core/roles.py` — file role owns vision requests and image keywords.
+- `tests/test_vision.py` — metadata, layout, OCR, comparison, chart/diagram,
+  troubleshooting, indexing, natural intents and assistant commands.
+
+### Testing
+
+- Full suite: **607 tests, OK**.
+- `python -m compileall -q core tools web config tests main.py` passed.
+- `git diff --check` passed.
+- `python -m core.benchmark`: server started in 3.9 s; llama-server 1116.9 MB,
+  Python 35.7 MB, peak 1157.5 MB (target 1300 MB); prefill 6.3 tok/s,
+  generation 3.7 tok/s.
+- Real Windows OCR smoke test recognized `HELLO VISION 123`; Python RSS grew
+  by 20.3 MB during image analysis and indexing.
+
 ## v0.3.1 — 2026-11-13
 
 **Feature set 4.16 Specialized Agent Roles**

@@ -110,6 +110,7 @@ from core.productivity import (
 from core.tasks import TaskEngine, TaskError
 from core.agent import GoalAgent
 from core.roles import RoleRouter, RoleSelection
+from core.vision import VisionError, VisionService, format_analysis
 from core.timers import TimerError, TimerService
 from core.utilities import humanize_duration, parse_duration
 from tools import build_registry
@@ -245,6 +246,13 @@ RESEARCH_HELP = (
     " contradictions, freshness and citations."
 )
 APPLICATION_DISABLED = "Application intelligence is disabled, sir."
+VISION_DISABLED = "Visual intelligence is disabled, sir."
+VISION_HELP = (
+    "Vision commands: analyze PATH, read PATH, summary PATH, metadata PATH,"
+    " ui PATH, compare PATH | PATH, chart PATH, diagram PATH,"
+    " troubleshoot [PATH], screen, index [PATH], search QUERY."
+    " OCR and layout analysis run locally; no visual model is loaded."
+)
 APPLICATION_HELP = (
     "Application commands: status, context, title, shortcuts, clipboard,"
     " explain, search, page, tabs, new-tab, close-tab, next-tab, prev-tab,"
@@ -271,7 +279,8 @@ HELP_TEXT = (
     " (list, learned, episodes, explain ID), /tasks lists durable plans"
     " (show, approve, resume, cancel, history, plan TEXT, agent TEXT),"
     " /roles lists agent roles and /role NAME REQUEST forces one,"
-    " /intent TEXT"
+    " /vision reads, summarizes, compares, indexes and troubleshoots local"
+    " images and screenshots, /intent TEXT"
     " shows the detected intent as JSON, /tools lists computer tools, /confirm"
     " and /cancel handle pending actions, /forget deletes saved history after"
     " confirmation, /documents manages local document reading, indexing,"
@@ -472,6 +481,7 @@ class Assistant:
     self._developer = None
     self._research = None
     self._application = None
+    self._vision = None
     self._notifier = None
     self._documents = None
     self._last_document = ""
@@ -741,6 +751,9 @@ class Assistant:
     if self._clipboard_history is not None:
       self._clipboard_history.close()
       self._clipboard_history = None
+    if self._vision is not None:
+      self._vision.close()
+      self._vision = None
     if self._documents is not None:
       self._documents.close()
       self._documents = None
@@ -941,6 +954,18 @@ class Assistant:
           self._settings.documents,
       )
     return self._application
+
+  def _get_vision(self):
+    """Build the local visual service lazily; it uses no visual model."""
+    if not self._settings.tools.enabled:
+      return None
+    if self._vision is None:
+      self._vision = VisionService(
+          self._settings.documents,
+          self._settings.tools,
+          self._documents,
+      )
+    return self._vision
 
   # -- web search -------------------------------------------------------
 
@@ -1848,6 +1873,8 @@ class Assistant:
   # -- deterministic intents -------------------------------------------
 
   def _answer_intent(self, intent, user_text=None):
+    if intent.name == "vision":
+      return self._vision_intent(intent)
     if intent.name == "time":
       now = datetime.now()
       return (
@@ -4770,6 +4797,8 @@ class Assistant:
       return self._tasks_command(parts[1:])
     if command in {"/roles", "/role"}:
       return self._roles_command(parts[1:])
+    if command in {"/vision", "/image"}:
+      return self._vision_command(text)
     if command in {"/documents", "/docs"}:
       return self._documents_command(text)
     if command == "/forget":
@@ -4792,6 +4821,225 @@ class Assistant:
     if len(parts) == 1:
       return role.detail()
     return self._reply(" ".join(parts[1:]), forced_role=role)
+
+  # -- visual intelligence ----------------------------------------------
+
+  def _vision_command(self, text):
+    body = text.split(maxsplit=1)[1].strip() if len(text.split()) > 1 else ""
+    if not body or body.lower() in {"help", "?"}:
+      return VISION_HELP
+    parts = body.split(maxsplit=1)
+    action = parts[0].lower()
+    rest = parts[1].strip() if len(parts) > 1 else ""
+    if action in {"screen", "screenshot", "capture"}:
+      return self._vision_action("screen")
+    if action in {"compare", "diff", "difference"}:
+      first, second = self._vision_pair(rest)
+      return self._vision_action("compare", first=first, second=second)
+    if action == "search":
+      return self._vision_action("search", query=rest)
+    if action == "index":
+      return self._vision_action("index", path=rest or ".")
+    aliases = {
+        "inspect": "analyze",
+        "describe": "analyze",
+        "ocr": "read",
+        "text": "read",
+        "extract": "read",
+        "summarize": "summary",
+        "meta": "metadata",
+        "info": "metadata",
+        "elements": "ui",
+        "layout": "ui",
+        "graph": "chart",
+        "diagnose": "troubleshoot",
+        "debug": "troubleshoot",
+    }
+    action = aliases.get(action, action)
+    if action not in {
+        "analyze",
+        "read",
+        "summary",
+        "metadata",
+        "ui",
+        "chart",
+        "diagram",
+        "troubleshoot",
+    }:
+      return VISION_HELP
+    return self._vision_action(action, path=rest)
+
+  @staticmethod
+  def _vision_pair(value):
+    text = str(value or "").strip()
+    if "|" in text:
+      first, second = text.split("|", 1)
+      return first.strip(), second.strip()
+    match = re.split(r"\s+(?:and|vs\.?|versus)\s+", text, maxsplit=1)
+    if len(match) == 2:
+      return match[0].strip(), match[1].strip()
+    return text, ""
+
+  def _vision_intent(self, intent):
+    entities = intent.entities
+    action = str(entities.get("action") or "analyze").lower()
+    if action == "compare":
+      return self._vision_action(
+          "compare",
+          first=str(entities.get("first") or ""),
+          second=str(entities.get("second") or ""),
+      )
+    if action == "search":
+      return self._vision_action("search", query=str(entities.get("query") or ""))
+    if action == "index":
+      return self._vision_action("index", path=str(entities.get("path") or "."))
+    return self._vision_action(action, path=str(entities.get("path") or ""))
+
+  def _vision_action(self, action, path="", first="", second="", query=""):
+    service = self._get_vision()
+    if service is None:
+      return VISION_DISABLED
+    try:
+      if action == "screen":
+        return format_analysis(service.screenshot())
+      if action == "index":
+        result = service.index_folder(path or ".")
+        text = (
+            f"Indexed {result['indexed']} of {result['found']} image(s);"
+            f" {result['failed']} failed."
+        )
+        if result["errors"]:
+          text += " First problem: " + result["errors"][0]
+        return text
+      if action == "search":
+        if not query.strip():
+          return "Usage: /vision search QUERY"
+        rows = service.search(query)
+        if not rows:
+          return f"I found no indexed images matching {query!r}."
+        lines = [f"Indexed image matches for {query!r}:"]
+        for row in rows:
+          lines.append(
+              f"- {row['title']} ({row['width']}x{row['height']}):"
+              f" {row['path']}"
+          )
+          if row.get("snippet"):
+            lines.append("  " + str(row["snippet"])[:180])
+        return "\n".join(lines)
+      if action != "compare" and not path.strip():
+        path = str(service.latest())
+      if action == "analyze":
+        return format_analysis(service.analyze(path))
+      if action == "read":
+        text, metadata = service.text(path)
+        lines = [f"OCR text from {path}:", text]
+        confidence = metadata.get("ocr_confidence")
+        if confidence is not None:
+          lines.append(
+              f"OCR confidence: {round(float(confidence) * 100)}%"
+              f" ({metadata.get('ocr_level', 'unknown')}; local estimate)."
+          )
+        return "\n".join(lines)
+      if action == "summary":
+        return service.summary(path)
+      if action == "metadata":
+        data = service.metadata(path)
+        lines = [
+            f"{path}: {data['width']}x{data['height']} {data['format']}"
+            f" ({data['bytes']} bytes).",
+            f"Mode: {data['mode']}; frames: {data['frames']};"
+            f" animated: {data['animated']};"
+            f" transparency: {data['has_transparency']};"
+            f" ICC: {data['icc_profile']}.",
+        ]
+        if data.get("dpi"):
+          lines.append(f"DPI: {data['dpi']}")
+        exif = data.get("exif") or {}
+        if exif:
+          lines.append(
+              "EXIF: " + ", ".join(f"{key}={value}" for key, value in exif.items())
+          )
+        else:
+          lines.append("EXIF: none exposed by Pillow.")
+        return "\n".join(lines)
+      if action == "ui":
+        elements = service.elements(path)
+        if not elements:
+          return "I found no large UI-like regions in that image."
+        lines = [
+            f"Detected {len(elements)} UI-like region(s) using edge/region"
+            " heuristics (not a semantic detector)."
+        ]
+        for index, item in enumerate(elements[:10], 1):
+          lines.append(
+              f"{index}. x={item['x']} y={item['y']}"
+              f" {item['width']}x{item['height']}"
+              f" ({item['area_percent']}% coverage)"
+          )
+        return "\n".join(lines)
+      if action == "compare":
+        if not first.strip() or not second.strip():
+          return "Usage: /vision compare PATH | PATH"
+        result = service.compare(first, second)
+        lines = [
+            f"Pixel similarity: {result['pixel_similarity']}%"
+            f" (64x64 grayscale thumbnail).",
+            f"OCR text similarity: {result['text_similarity']}%.",
+        ]
+        if result["size_changed"]:
+          lines.append("Image dimensions changed.")
+        if result["only_first"]:
+          lines.append("Only in the first: " + ", ".join(result["only_first"]))
+        if result["only_second"]:
+          lines.append("Only in the second: " + ", ".join(result["only_second"]))
+        if result["removed"]:
+          lines.append("Removed lines: " + " | ".join(result["removed"][:4]))
+        if result["added"]:
+          lines.append("Added lines: " + " | ".join(result["added"][:4]))
+        return "\n".join(lines)
+      if action == "chart":
+        result = service.chart(path)
+        analysis = result["analysis"]
+        lines = [
+            f"{analysis.title}: {result['kind']}.",
+            "Numeric values from OCR: "
+            + (", ".join(str(value) for value in result["values"]) or "none"),
+            f"Trend heuristic: {result['trend']}.",
+        ]
+        if result["labels"]:
+          lines.append("Labels: " + " | ".join(result["labels"]))
+        lines.append(
+            "This is an OCR/layout interpretation, not a semantic chart model;"
+            " verify values against the source."
+        )
+        return "\n".join(lines)
+      if action == "diagram":
+        result = service.diagram(path)
+        analysis = result["analysis"]
+        lines = [
+            f"{analysis.title}: diagram-like layout with"
+            f" {result['boxes']} large region(s).",
+            "Region distribution: "
+            + ", ".join(
+                f"{name} {count}"
+                for name, count in result["vertical"].items()
+            ),
+        ]
+        if result["labels"]:
+          lines.append("Labels: " + " | ".join(result["labels"]))
+        lines.append(
+            "Connectors and meaning are not inferred by a visual model;"
+            " use the labels and layout as a guide."
+        )
+        return "\n".join(lines)
+      if action == "troubleshoot":
+        analysis, checks = service.troubleshoot(path)
+        lines = [format_analysis(analysis), "Troubleshooting:"]
+        lines.extend(f"- {check}" for check in checks)
+        return "\n".join(lines)
+    except VisionError as exc:
+      return f"I couldn't inspect that image, sir: {exc}."
+    return VISION_HELP
 
   # -- document commands ------------------------------------------------
 

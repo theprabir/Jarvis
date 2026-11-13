@@ -7,12 +7,12 @@ interface; deterministic Python modules do the audio, routing and tool work.
 
 **Current status:** Phase 1 (stabilization) and feature sets **4.1 Voice
 Interface** through **4.14 Application Intelligence** complete, plus optional
-document OCR with confidence warnings, currently **v0.3.1** in the
+document OCR with confidence warnings, currently **v0.3.2** in the
 advanced feature line. v0.2.11 switches the local model to IBM
 Granite 4.0 1B Instruct Q4_K_M; v0.2.12 keeps the prompt prefix stable so
 llama.cpp can reuse its cache across turns; v0.3.0 adds the constrained
-autonomous task agent; v0.3.1 adds specialized logical agent roles. Phase 4.14
-adds active-window detection,
+autonomous task agent; v0.3.1 adds specialized logical agent roles; v0.3.2
+adds local visual intelligence. Phase 4.14 adds active-window detection,
 clipboard assistance, confirmed browser actions, page summaries, screenshot
 OCR and application documentation search.
 JARVIS listens through the
@@ -327,6 +327,35 @@ Use `/roles` to list roles, `/role NAME` for one role, or
 `as a NAME agent, ...` and `NAME agent: ...` all work. A specialist prompt is
 inserted after the stable conversation transcript so the prompt cache remains
 effective.
+
+### Visual intelligence
+
+Visual intelligence runs locally on images and screenshots. It uses Pillow
+for metadata, colour and pixel work, the existing Windows OCR path for text,
+and a small numpy edge pass for UI-region hints. No visual model is loaded and
+images are never uploaded.
+
+| Command | Behaviour |
+| --- | --- |
+| `/vision analyze PATH` | Metadata, colour, layout, OCR text and a summary |
+| `/vision read PATH` | OCR-only text extraction with quality details |
+| `/vision summary PATH` | Deterministic OCR summary and visual observations |
+| `/vision metadata PATH` | Format, dimensions, mode, frames, DPI, EXIF and transparency |
+| `/vision ui PATH` | Large UI-like regions from an edge/region heuristic |
+| `/vision compare PATH \| PATH` | Pixel similarity, OCR similarity and changed text |
+| `/vision chart PATH` | Numeric values, labels and trend hints from OCR/layout |
+| `/vision diagram PATH` | Labels, region count and top/middle/bottom distribution |
+| `/vision troubleshoot [PATH]` | Blank/low-contrast/error/OCR checks; latest screenshot if omitted |
+| `/vision screen` | Capture the screen, then run the full analysis |
+| `/vision index [PATH]` | Index local images for search |
+| `/vision search QUERY` | Search indexed image titles, OCR and summaries |
+
+Natural requests also work: `read the image at chart.png`, `summarize the
+screenshot at screen.png`, `compare images before.png and after.png`,
+`analyze my screen`, `interpret the chart in report.png`, and
+`search images for invoice`. Path-less analysis uses the newest file in the
+`screenshots/` folder. Image OCR follows `[documents] ocr_enabled` and
+`ocr_language`; the image index shares the existing `data/jarvis.db`.
 
 ### Productivity to-dos
 
@@ -1106,6 +1135,7 @@ core/brain.py           Single-shot prompt -> spoken-safe reply
 core/assistant.py       Conversation-aware replies, modes, history, commands
 core/agent.py           Constrained goal interpretation and task planning
 core/roles.py           Specialized logical roles and deterministic selection
+core/vision.py          Local image OCR, analysis, comparison and image index
 core/conversation.py    Turns, compression summary and answer modes
 core/history.py         SQLite conversation history
 core/intents.py         Deterministic intent routing and JSON validation
@@ -1197,6 +1227,11 @@ logs/                   Runtime logs (git-ignored)
   model. They do not run separate reasoning loops, message each other or
   guarantee a particular specialist for ambiguous wording; explicit role
   phrases and recognized intents are the reliable way to choose one.
+- Visual intelligence is OCR and conventional image processing, not a
+  semantic vision model. UI-region, chart and diagram results are heuristic
+  hints and should be verified against the source image. OCR needs the Windows
+  language pack selected by `[documents] ocr_language`; image search finds
+  recognized text and summaries, not objects or visual similarity.
 - Note search is lexical FTS5 with no embeddings; a search that uses
   different words from the note can miss it. Notes are not versioned, and
   deleting one is permanent after confirmation.

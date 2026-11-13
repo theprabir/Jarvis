@@ -104,6 +104,7 @@ CONVERSATION_INTENTS = frozenset(
         "application_tab",
         "application_screenshot",
         "application_docs",
+        "vision",
         "remember_memory",
         "search_memory",
         "list_memory",
@@ -1970,6 +1971,139 @@ _DOCUMENT_REPORT = re.compile(
 )
 
 
+_VISION_READ = re.compile(
+    r"^(?:read|ocr|extract(?:\s+text)?\s+from)\s+(?:the\s+)?"
+    r"(?:image|picture|photo|screenshot)(?:\s+(?:at|from))?\s+"
+    r"(?P<path>.+)$",
+    re.I,
+)
+_VISION_SUMMARY = re.compile(
+    r"^(?:summarize|summarise|describe|understand|analy[sz]e)\s+"
+    r"(?:the\s+)?(?:image|picture|photo|screenshot)"
+    r"(?:\s+(?:at|from))?\s+(?P<path>.+)$",
+    re.I,
+)
+_VISION_METADATA = re.compile(
+    r"^(?:image\s+)?(?:metadata|meta|properties)\s+"
+    r"(?:for|of|from)\s+(?P<path>.+)$",
+    re.I,
+)
+_VISION_UI = re.compile(
+    r"^(?:detect|find|show)?\s*(?:ui|interface|layout)\s+"
+    r"(?:elements|regions)\s+(?:in|of|from)\s+(?P<path>.+)$",
+    re.I,
+)
+_VISION_COMPARE = re.compile(
+    r"^(?:compare|diff|difference between)\s+(?:the\s+)?"
+    r"(?:images|pictures|screenshots)\s+(?P<first>.+?)\s+"
+    r"(?:and|with|to|vs\.?)\s+(?P<second>.+)$",
+    re.I,
+)
+_VISION_CHART = re.compile(
+    r"^(?:interpret|read|analy[sz]e|explain)\s+(?:the\s+)?"
+    r"(?:chart|graph)\s+(?:in|at|from)?\s*(?P<path>.+)$",
+    re.I,
+)
+_VISION_DIAGRAM = re.compile(
+    r"^(?:interpret|read|analy[sz]e|explain|understand)\s+(?:the\s+)?"
+    r"diagram\s+(?:in|at|from)?\s*(?P<path>.+)$",
+    re.I,
+)
+_VISION_TROUBLE = re.compile(
+    r"^(?:troubleshoot|diagnose|debug|what(?:'s| is) wrong with)\s+"
+    r"(?:the\s+)?(?:screenshot|image|picture|screen)"
+    r"(?:\s+(?:at|from))?\s*(?P<path>.*)$",
+    re.I,
+)
+_VISION_SCREEN = re.compile(
+    r"^(?:analy[sz]e|understand|read|summarize|summarise|look at)\s+"
+    r"(?:my|the|this)\s+(?:screen|screenshot|desktop)$",
+    re.I,
+)
+_VISION_INDEX = re.compile(
+    r"^(?:index|scan)\s+(?:my\s+|the\s+)?"
+    r"(?:images|pictures|photos|screenshots)"
+    r"(?:\s+(?:in|from)\s+(?P<path>.+))?$",
+    re.I,
+)
+_VISION_SEARCH = re.compile(
+    r"^(?:search|find)\s+(?:my\s+|the\s+)?"
+    r"(?:images|pictures|photos|screenshots)\s+(?:for\s+)?"
+    r"(?P<query>.+)$",
+    re.I,
+)
+
+
+def recognize_vision(text):
+  """Recognize local image OCR, analysis, comparison and search requests."""
+  source = (text or "").strip().rstrip("?.!")
+  if not source:
+    return None
+  if _VISION_SCREEN.match(source):
+    return Intent("vision", 0.93, {"action": "screen"})
+  match = _VISION_READ.match(source)
+  if match:
+    path = _clean(match.group("path"))
+    if path:
+      return Intent("vision", 0.93, {"action": "read", "path": path})
+  match = _VISION_SUMMARY.match(source)
+  if match:
+    return Intent(
+        "vision", 0.92, {"action": "summary", "path": _clean(match.group("path"))}
+    )
+  match = _VISION_METADATA.match(source)
+  if match:
+    return Intent(
+        "vision", 0.92, {"action": "metadata", "path": _clean(match.group("path"))}
+    )
+  match = _VISION_UI.match(source)
+  if match:
+    return Intent(
+        "vision", 0.92, {"action": "ui", "path": _clean(match.group("path"))}
+    )
+  match = _VISION_COMPARE.match(source)
+  if match:
+    return Intent(
+        "vision",
+        0.92,
+        {
+            "action": "compare",
+            "first": _clean(match.group("first")),
+            "second": _clean(match.group("second")),
+        },
+    )
+  match = _VISION_CHART.match(source)
+  if match:
+    return Intent(
+        "vision", 0.92, {"action": "chart", "path": _clean(match.group("path"))}
+    )
+  match = _VISION_DIAGRAM.match(source)
+  if match:
+    return Intent(
+        "vision", 0.92, {"action": "diagram", "path": _clean(match.group("path"))}
+    )
+  match = _VISION_TROUBLE.match(source)
+  if match:
+    return Intent(
+        "vision",
+        0.92,
+        {"action": "troubleshoot", "path": _clean(match.group("path"))},
+    )
+  match = _VISION_INDEX.match(source)
+  if match:
+    return Intent(
+        "vision",
+        0.9,
+        {"action": "index", "path": _clean(match.group("path") or ".")},
+    )
+  match = _VISION_SEARCH.match(source)
+  if match:
+    query = _clean(match.group("query"))
+    if len(query) >= 2:
+      return Intent("vision", 0.9, {"action": "search", "query": query})
+  return None
+
+
 def _document_path_like(value):
   text = str(value or "").strip()
   suffix = text.rsplit(".", 1)[-1].lower() if "." in text else ""
@@ -2584,6 +2718,9 @@ class IntentRouter:
     if intent is not None:
       return intent
     intent = recognize_todo(text)
+    if intent is not None:
+      return intent
+    intent = recognize_vision(text)
     if intent is not None:
       return intent
     intent = recognize_documents(text)

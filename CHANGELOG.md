@@ -7,6 +7,62 @@ all feature sets in a phase increments the middle number and resets the patch.
 feature sets in this level increment the patch (v0.2.1, …). **v0.3.0** begins
 the advanced line with feature set 4.15.
 
+## v0.3.6 — 2026-11-13
+
+**Feature set 4.21 Wake-Word Activation**
+
+### Implemented functionality
+
+- **Passive wake-word listener** — `voice/wake.py` runs a daemon microphone
+  loop while the voice interface is idle. It reuses the Vosk model already
+  loaded for speech-to-text, so no second acoustic model is loaded.
+- **Vosk grammar detector** — a dedicated `KaldiRecognizer` recognizes the
+  configurable wake phrase (default `hey jarvis`) and the bare final word
+  (`jarvis`). Matching is restricted to the tail of the current partial/final
+  transcript, with a cooldown and recognizer resets to avoid stale partials
+  and long-stream degradation.
+- **Background activation flow** — on detection the passive listener releases
+  the microphone, plays an optional chime or voice acknowledgement, captures
+  one VAD utterance, answers it, and returns to passive listening. The active
+  capture has an 8-second no-speech timeout so a false activation does not
+  leave the microphone open indefinitely.
+- **Microphone handoff** — the wake listener is paused while recording,
+  thinking, speaking or handling typed input, preventing JARVIS from hearing
+  its own speech. Timer and proactive notifications now use the same pause
+  path.
+- **PTT preserved** — Ctrl+Space, Enter on an empty line, Escape barge-in and
+  the existing typed fallback continue to work. PTT takes priority over the
+  background listener.
+- **Privacy** — passive audio is processed in memory and discarded; it is not
+  written to disk, logged or sent over the network.
+- **Controls** — `/wake on`, `/wake off` and `/wake status` in voice mode, plus
+  a startup indicator and passive-listening status line.
+- **Configuration** — `wake_enabled`, `wake_phrase`, `wake_cooldown_ms`,
+  `wake_arm_timeout_s` and `wake_ack` in `[voice]`, with validation.
+- Added `tests/test_wake.py` for matching, grammar construction, cooldown,
+  listener pause/resume/stop, configuration and interface controls.
+
+### Important files
+
+- New: `voice/wake.py`, `tests/test_wake.py`
+- Modified: `voice/interface.py`, `voice/audio.py`, `voice/stt.py`,
+  `core/config.py`, `core/assistant.py`, `main.py`, `config/settings.toml`,
+  `README.md`
+
+### Testing status
+
+- Focused wake and voice tests pass; full suite: **659 tests, OK**.
+- `git diff --check` passed.
+- Real Vosk grammar smoke test: “Hey Jarvis” and “Jarvis” detected; “Hello
+  there” and “Hey can you help me” did not trigger.
+- Passive stack (assistant + Vosk + wake detector) measured **1298.6 MB**
+  working set with the LLM server. SAPI adds about 29 MB, so the full TTS
+  voice path measures about **1324.6 MB**; that is a pre-existing SAPI
+  overhead and the reason the planned 4.22 voice work moves the default to
+  Edge TTS with SAPI as fallback.
+- Text-only benchmark: **1160.7 MB peak**, under the 1,300 MB target.
+- No Git commit or push was made.
+
 ## v0.3.5 — 2026-11-13
 
 **Feature set 4.20 Reliability and Self-Monitoring**

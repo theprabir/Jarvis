@@ -16,6 +16,7 @@ from voice.audio import Microphone, listen, resolve_input_device
 from voice.errors import AudioError, SpeechError, SttError, VoiceError
 from voice.stt import VoskTranscriber
 from voice.tts import WindowsVoice
+from voice.wake import VoskWakeDetector, WakeWordListener
 
 log = logging.getLogger(__name__)
 
@@ -54,6 +55,8 @@ class VoiceInterface:
     self._interrupt = threading.Event()
     self._mic = None
     self._stt = None
+    self._wake_listener = None
+    self._wake_enabled = bool(self.voice_config.wake_enabled)
     self._hotkeys = []
     self._running = False
     self._speaking = False
@@ -69,6 +72,8 @@ class VoiceInterface:
     self._mic.probe()
 
     self._stt = VoskTranscriber(self.voice_config.resolved_stt_model)
+    if self._wake_enabled:
+      self._ensure_wake_listener()
     self._install_hotkeys()
     threading.Thread(
         target=self._watch_escape, name="jarvis-escape", daemon=True
@@ -103,6 +108,85 @@ class VoiceInterface:
 
   def _on_ptt(self):
     self._ptt.set()
+
+  def _on_wake(self, detection):
+    self._events.put(("wake", detection))
+
+  def _ensure_wake_listener(self):
+    """Create the passive listener without making voice startup mandatory."""
+    if self._stt is None or self._mic is None:
+      return None
+    if self._wake_listener is not None:
+      return self._wake_listener
+    try:
+      detector = VoskWakeDetector(
+          self._stt,
+          phrase=self.voice_config.wake_phrase,
+          cooldown_ms=self.voice_config.wake_cooldown_ms,
+      )
+      self._wake_listener = WakeWordListener(
+          self._mic, detector, self._on_wake
+      )
+      self._wake_listener.start()
+      log.info(
+          "Wake-word listener ready for %r", self.voice_config.wake_phrase
+      )
+    except Exception as exc:
+      log.warning("Wake-word listener unavailable: %s", exc)
+      self._wake_listener = None
+    return self._wake_listener
+
+  def _pause_wake(self):
+    if self._wake_listener is not None:
+      self._wake_listener.pause()
+
+  def _resume_wake(self):
+    if self._wake_enabled and self._wake_listener is not None:
+      self._wake_listener.resume()
+
+  def _wake_command(self, text):
+    parts = text.split(maxsplit=1)
+    action = parts[1].strip().lower() if len(parts) > 1 else "status"
+    if action in {"on", "enable", "start"}:
+      self._wake_enabled = True
+      if self._ensure_wake_listener() is None:
+        return "Wake-word listening is unavailable, sir."
+      self._resume_wake()
+      return (
+          f"Passive wake word enabled for {self.voice_config.wake_phrase!r}, sir."
+      )
+    if action in {"off", "disable", "stop"}:
+      self._wake_enabled = False
+      self._pause_wake()
+      return "Passive wake word disabled, sir. Push-to-talk is still available."
+    if action in {"status", "?", "help"}:
+      if not self._wake_enabled:
+        return "Passive wake word is off, sir."
+      if self._wake_listener is None:
+        return "Passive wake word is enabled but unavailable, sir."
+      if self._wake_listener.last_error:
+        return (
+            "Passive wake word is enabled but the microphone failed: "
+            + self._wake_listener.last_error
+        )
+      return (
+          f"Passive wake word is listening for "
+          f"{self.voice_config.wake_phrase!r}, sir."
+      )
+    return "Usage: /wake on|off|status"
+
+  def _wake_ack(self):
+    if self.voice_config.wake_ack == "none":
+      return
+    if self.voice_config.wake_ack == "voice":
+      self._say("Yes, sir?")
+      return
+    try:
+      import winsound
+
+      winsound.Beep(880, 100)
+    except Exception:
+      log.debug("Wake-word chime unavailable", exc_info=True)
 
   def _on_escape(self):
     if self._speaking or self._listening:
@@ -142,20 +226,42 @@ class VoiceInterface:
         "\n[Voice active] Press %s or Enter on an empty line to talk."
         % self.voice_config.ptt_key
     )
-    print("[Voice active] Escape stops speech. Type a message or 'exit'.\n")
+    print("[Voice active] Escape stops speech. Type a message or 'exit'.")
+    if self._wake_enabled and self._wake_listener is not None:
+      print(
+          "[Wake word] Say %r while idle, or press Ctrl+Space.\n"
+          % self.voice_config.wake_phrase
+      )
+    else:
+      print("[Wake word] Passive listening is off; use push-to-talk.\n")
+    # Do not start wake inference until the greeting has finished, otherwise
+    # JARVIS can hear its own name from the speaker.
     self._say("Jarvis online, sir. Ready when you are.")
+    self._resume_wake()
     try:
       while self._running:
         try:
           kind, payload = self._events.get(timeout=0.1)
         except queue.Empty:
           if self._ptt.is_set():
-            if not self._handle_voice():
-              break
+            self._pause_wake()
+            try:
+              if not self._handle_voice():
+                break
+            finally:
+              self._resume_wake()
           continue
 
         if kind == "eof":
           break
+        if kind == "wake":
+          self._pause_wake()
+          try:
+            if not self._handle_voice(from_wake=True):
+              break
+          finally:
+            self._resume_wake()
+          continue
         if kind == "text":
           command = payload.lower()
           if command in EXIT_COMMANDS:
@@ -167,22 +273,40 @@ class VoiceInterface:
           if command == "/voices":
             print("Available voices: " + "; ".join(self._voice_names()))
             continue
-          self._say(self._respond(payload))
+          self._pause_wake()
+          try:
+            if command.startswith("/wake"):
+              response = self._wake_command(payload)
+              # /wake on resumes the listener; keep it paused through the
+              # spoken confirmation so it cannot hear JARVIS saying the phrase.
+              self._pause_wake()
+              self._say(response)
+            else:
+              self._say(self._respond(payload))
+          finally:
+            self._resume_wake()
     except KeyboardInterrupt:
       print("\nJarvis: Shutting down.")
     finally:
       self._close()
     return 0
 
-  def _handle_voice(self):
+  def _handle_voice(self, from_wake=False):
     """Record, transcribe and answer one spoken request."""
     self._ptt.clear()
     self._interrupt.clear()
+    if from_wake:
+      self._wake_ack()
     print("[Listening...]")
     try:
       self._listening = True
       utterance = listen(
-          self._mic, self.voice_config, abort=self._interrupt.is_set
+          self._mic,
+          self.voice_config,
+          abort=self._interrupt.is_set,
+          start_timeout_s=(
+              self.voice_config.wake_arm_timeout_s if from_wake else 0.0
+          ),
       )
     except AudioError as exc:
       log.error("Microphone failure: %s", exc)
@@ -236,6 +360,14 @@ class VoiceInterface:
     finally:
       self._speaking = False
 
+  def notify(self, text):
+    """Speak an asynchronous timer/briefing without letting wake infer TTS."""
+    self._pause_wake()
+    try:
+      self._say(text)
+    finally:
+      self._resume_wake()
+
   def _voice_names(self):
     return WindowsVoice.available_voices() or ["none"]
 
@@ -243,6 +375,9 @@ class VoiceInterface:
     self._running = False
     self._stop_watch.set()
     self._interrupt.set()
+    if self._wake_listener is not None:
+      self._wake_listener.stop()
+      self._wake_listener = None
     for handle in self._hotkeys:
       try:
         import keyboard

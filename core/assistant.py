@@ -310,7 +310,8 @@ HELP_TEXT = (
     " task, memory and latency status, config versions and reversible-action"
     " undo; /capabilities lists what is available; /offline, /privacy and"
     " /explain control reliability modes; /undo reverts the last reversible"
-    " file action. /help lists this."
+    " file action. In voice mode, /wake on|off|status controls passive"
+    " wake-word listening. /help lists this."
 )
 
 DOCUMENTS_HELP = (
@@ -1053,7 +1054,11 @@ class Assistant:
     settings = self._settings
     groups = {
         "assistant": [
-            ("voice", settings.voice.enabled, "push-to-talk and offline speech"),
+            (
+                "voice",
+                settings.voice.enabled,
+                "passive wake word, push-to-talk and offline speech",
+            ),
             ("conversation", settings.conversation.enabled, "history and context"),
             ("memory", settings.memory.enabled, "saved facts and episodes"),
             ("tools", settings.tools.enabled, "validated computer actions"),
@@ -5456,6 +5461,11 @@ class Assistant:
       return self._mode_command(command.lstrip("/"), argument)
     if command in {"/undo", "/revert"}:
       return self._undo_action()
+    if command == "/wake":
+      return (
+          "Wake-word controls are available in voice mode, sir:"
+          " /wake on|off|status."
+      )
     if command == "/help":
       return HELP_TEXT
     return f"Unknown command {command}. Try /help."

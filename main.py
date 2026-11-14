@@ -96,6 +96,8 @@ def run(settings):
         log.warning("Voice interface unavailable: %s", exc)
         print(f"[Warning] Voice unavailable ({exc}); using text mode.")
       else:
+        # Timer and proactive notifications must pause passive listening too.
+        assistant.set_notifier(interface.notify)
         return interface.run()
     return run_cli(settings, speaker, assistant)
   except KeyboardInterrupt:

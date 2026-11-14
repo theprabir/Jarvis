@@ -82,6 +82,12 @@ class VoiceConfig:
   min_speech_ms: int = 250
   max_record_s: float = 15.0
   stt_model: str = "models/vosk-model-small-en-us-0.15"
+  # Passive wake-word detection reuses the Vosk model; no second model is loaded.
+  wake_enabled: bool = True
+  wake_phrase: str = "hey jarvis"
+  wake_cooldown_ms: int = 2000
+  wake_arm_timeout_s: float = 8.0
+  wake_ack: str = "chime"
 
   @property
   def resolved_stt_model(self) -> Path:
@@ -596,6 +602,26 @@ def _validate(settings):
   )
   _require(2.0 <= voice.max_record_s <= 60.0, "[voice] max_record_s must be 2-60")
   _require(bool(voice.stt_model), "[voice] stt_model must not be empty")
+  _require(
+      isinstance(voice.wake_enabled, bool),
+      "[voice] wake_enabled must be true or false",
+  )
+  _require(
+      bool(voice.wake_phrase.strip()),
+      "[voice] wake_phrase must not be empty",
+  )
+  _require(
+      500 <= voice.wake_cooldown_ms <= 10_000,
+      "[voice] wake_cooldown_ms must be 500-10000",
+  )
+  _require(
+      2.0 <= voice.wake_arm_timeout_s <= 30.0,
+      "[voice] wake_arm_timeout_s must be 2-30",
+  )
+  _require(
+      voice.wake_ack in {"chime", "voice", "none"},
+      "[voice] wake_ack must be chime, voice or none",
+  )
 
   conversation = settings.conversation
   _require(

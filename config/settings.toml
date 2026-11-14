@@ -69,6 +69,14 @@ max_record_s = 20.0
 # the small model stays the default. Any Vosk model folder can be used here;
 # if it is missing, the largest models/vosk-model-* is loaded instead.
 stt_model = "models/vosk-model-small-en-us-0.15"
+# Passive wake-word listening reuses the Vosk model already loaded for STT.
+# Set wake_enabled = false to return to push-to-talk only. No passive audio is
+# saved or sent anywhere. wake_ack may be chime, voice or none.
+wake_enabled = true
+wake_phrase = "hey jarvis"
+wake_cooldown_ms = 2000
+wake_arm_timeout_s = 8.0
+wake_ack = "chime"
 
 [conversation]
 # Multi-turn context: recent exchanges are sent with every request; older ones

@@ -7,7 +7,7 @@ interface; deterministic Python modules do the audio, routing and tool work.
 
 **Current status:** Phase 1 (stabilization) and feature sets **4.1 Voice
 Interface** through **4.14 Application Intelligence** complete, plus optional
-document OCR with confidence warnings, currently **v0.3.5** in the
+document OCR with confidence warnings, currently **v0.3.6** in the
 advanced feature line. v0.2.11 switches the local model to IBM
 Granite 4.0 1B Instruct Q4_K_M; v0.2.12 keeps the prompt prefix stable so
 llama.cpp can reuse its cache across turns; v0.3.0 adds the constrained
@@ -16,11 +16,12 @@ adds local visual intelligence; v0.3.3 adds a personal knowledge base with
 flashcards and spaced review; v0.3.4 adds deterministic proactive briefings
 and alerts; v0.3.5 adds bounded reliability telemetry, self-monitoring,
 capability discovery, offline/privacy/explain modes, configuration rollback
-and reversible-action undo. Phase 4.14 adds active-window detection,
+and reversible-action undo; v0.3.6 adds passive wake-word activation. Phase 4.14 adds active-window detection,
 clipboard assistance, confirmed browser actions, page summaries, screenshot
 OCR and application documentation search.
 JARVIS listens through the
-microphone with push-to-talk, transcribes offline with Vosk, keeps multi-turn
+microphone for a configurable passive wake word and push-to-talk, transcribes
+offline with Vosk, keeps multi-turn
 context across restarts, remembers explicitly saved preferences, facts, paths
 and folders, learns high-confidence first-person facts with provenance and
 expiry, summarizes substantive exchanges as episodic memory, answers simple
@@ -60,7 +61,10 @@ project progress and suggested next actions (see
 - OCR needs Windows and an installed Windows OCR language pack; `en-US` is
   available on most English installations
 - 8 GB RAM target machine. Measured: ~1.16 GB benchmark with the LLM loaded;
-  ~1.29 GB combined with the small Vosk voice model loaded
+  ~1.30 GB combined with the small Vosk voice model and passive wake detector.
+  Windows SAPI adds roughly 29 MB, so the full text-to-speech voice path can
+  reach ~1.32 GB; the planned natural-voice backend uses Edge TTS with SAPI
+  only as fallback.
 
 ## Installation
 
@@ -96,7 +100,7 @@ All runtime settings live in `config/settings.toml`:
 | `[llama]` | Executable, model path, host/port, context, KV cache type, threads, batch sizes, slots, startup timeout |
 | `[llm]` | Connect/read timeouts, max tokens, temperature, retries |
 | `[tts]` | Speech flag, rate (words/minute), volume, voice name substring |
-| `[voice]` | Voice mode flag, microphone, push-to-talk key, VAD, silence/record limits, Vosk model path |
+| `[voice]` | Voice mode, microphone, push-to-talk, passive wake word, VAD, silence/record limits, Vosk model path |
 | `[conversation]` | Multi-turn context, answer mode, token limits, summarization, history database |
 | `[tools]` | File sandbox root, read/search limits, allowed applications and commands |
 | `[tasks]` | Durable task database, step limit, retries, parallel workers and approval |
@@ -121,9 +125,10 @@ All runtime settings live in `config/settings.toml`:
 Unknown keys are rejected so typos fail fast. Override the file location with
 `--config PATH` or the `JARVIS_CONFIG` environment variable.
 
-Voice defaults: `ctrl+space` push-to-talk, VAD aggressiveness 2, a request ends
-after 1200 ms of silence, clicks shorter than 250 ms are discarded, recording
-is capped at 20 s. A shorter `silence_ms` cuts a request at its first pause and
+Voice defaults: `ctrl+space` push-to-talk, passive wake phrase `hey jarvis`,
+wake cooldown 2000 ms, an 8 s wake activation window, VAD aggressiveness 2,
+a request ends after 1200 ms of silence, clicks shorter than 250 ms are
+discarded, recording is capped at 20 s. A shorter `silence_ms` cuts a request at its first pause and
 produces fragmented transcripts. `input_device = ""` means the system default
 microphone; set it to a name substring (for example `"USB"`) to pick another
 device. `ptt_key` takes any `keyboard` hotkey string.
@@ -1225,6 +1230,10 @@ splits the 2048-token context and leaves each request far less room.
 
 Voice mode is the default. JARVIS prints a short greeting, then waits:
 
+- While idle it passively listens for **“Hey Jarvis”** (configurable). Say the
+  phrase, wait for the short chime, then speak your request. Passive audio is
+  processed in memory only; it is not saved or sent anywhere. Use `/wake off`
+  to disable passive listening, or `/wake status` to inspect it.
 - Press **Ctrl+Space** (or Enter on an empty console line) and speak. Audio is
   captured until you pause, transcribed offline, answered by the local model
   and spoken aloud.
@@ -1234,6 +1243,7 @@ Voice mode is the default. JARVIS prints a short greeting, then waits:
 - You can type at the `You:` prompt at any time; typed and spoken requests share
   the same conversation state.
 - `/stop` clears a pending interrupt and `/voices` lists installed SAPI voices.
+- `/wake on|off|status` controls passive wake-word listening in voice mode.
 - `/new` starts a fresh conversation, `/mode short|detailed|technical` changes
   how much JARVIS says, `/history` shows recent exchanges, `/intent TEXT` shows
   the detected intent as JSON, `/tools` lists computer tools, `/documents`
@@ -1370,7 +1380,8 @@ brain/errors.py         LLM error hierarchy
 voice/audio.py          Microphone capture, resampling, VAD segmentation
 voice/stt.py            Vosk offline transcription
 voice/tts.py            Interruptible Windows SAPI speech
-voice/interface.py      Push-to-talk loop, barge-in, text fallback
+voice/wake.py           Passive Vosk wake-word detector and background listener
+voice/interface.py      Wake/PTT loop, barge-in, text fallback
 voice/errors.py         Voice error hierarchy
 core/tools.py           Legacy helpers, pending Phase 4 rebuild
 models/                 GGUF model and Vosk model
@@ -1417,6 +1428,13 @@ logs/                   Runtime logs (git-ignored)
   Flashcards come from statements and bullet points, so narrative prose or
   tables may produce fewer cards. Quizzes show their answer key and do not
   record a score. Review scheduling uses the computer's local time.
+- Passive wake-word detection reuses the small Vosk model and its grammar
+  recognizer. It is not a dedicated far-field hotword model: quiet speech,
+  strong accents or background noise can miss the phrase, and similar-sounding
+  speech can occasionally trigger it. The listener is local-only, pauses while
+  JARVIS records or speaks, and does not retain passive audio. Wake detection
+  adds a small amount of idle CPU and memory; if the microphone is unavailable,
+  the rest of the voice interface falls back to push-to-talk.
 - Proactive briefings are deterministic snapshots, not autonomous monitoring.
   They run when requested and through one daily timer; they do not continuously
   watch files, email or the web. News quality depends on the configured search

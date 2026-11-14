@@ -70,6 +70,15 @@ class VoskTranscriber:
     self._recognizer_class = KaldiRecognizer
     log.info("Vosk model loaded: %s", path.name)
 
+  @property
+  def model(self):
+    """The loaded Vosk model, shared with passive wake detection."""
+    return self._model
+
+  @property
+  def recognizer_class(self):
+    return self._recognizer_class
+
   def transcribe(self, pcm, sample_rate=SAMPLE_RATE):
     """Return the recognized text, or ``""`` when nothing intelligible was said."""
     if not pcm:

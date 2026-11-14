@@ -7,6 +7,7 @@ Vosk accept. Frames are 30 ms (480 samples), the largest VAD frame size.
 from __future__ import annotations
 
 import logging
+import time
 from collections import deque
 from dataclasses import dataclass
 
@@ -112,6 +113,10 @@ class Segmenter:
   @property
   def result(self):
     return self._result
+
+  @property
+  def started(self):
+    return self._started
 
   def feed(self, frame):
     """Add one frame; return the finished :class:`Utterance` or ``None``."""
@@ -254,8 +259,12 @@ class Microphone:
         log.debug("Microphone close failed", exc_info=True)
 
 
-def listen(microphone, config, abort=None):
-  """Record one utterance from ``microphone`` according to ``config``."""
+def listen(microphone, config, abort=None, start_timeout_s=0.0):
+  """Record one utterance from ``microphone`` according to ``config``.
+
+  ``start_timeout_s`` lets a wake-word activation return to passive mode when
+  the user does not begin speaking. Normal push-to-talk leaves it at zero.
+  """
   vad = _make_vad(config.vad_aggressiveness)
   segmenter = Segmenter(
       lambda frame: vad.is_speech(frame, SAMPLE_RATE),
@@ -263,9 +272,16 @@ def listen(microphone, config, abort=None):
       min_speech_ms=config.min_speech_ms,
       max_record_s=config.max_record_s,
   )
+  started_at = time.monotonic()
   for frame in microphone.frames(abort):
     if len(frame) != FRAME_BYTES:
       continue
+    if (
+        start_timeout_s
+        and not segmenter.started
+        and time.monotonic() - started_at >= start_timeout_s
+    ):
+      return segmenter.close()
     utterance = segmenter.feed(frame)
     if utterance is not None:
       return utterance

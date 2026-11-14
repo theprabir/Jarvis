@@ -8,6 +8,7 @@ a confusing runtime error.
 from __future__ import annotations
 
 import os
+import re
 import tomllib
 from dataclasses import dataclass, fields
 from pathlib import Path
@@ -33,7 +34,7 @@ class LlamaConfig:
   model_path: str = "models/granite-4.0-1b-Q4_K_M.gguf"
   host: str = "127.0.0.1"
   port: int = 8080
-  context_size: int = 2048
+  context_size: int = 1536
   kv_cache_type: str = "q8_0"
   threads: int = 2
   threads_batch: int = 2
@@ -66,6 +67,15 @@ class LlmConfig:
 @dataclass(frozen=True)
 class TtsConfig:
   enabled: bool = True
+  # edge = natural online voice; sapi = local Windows voice only.
+  engine: str = "edge"
+  # Local fallback used when Edge is unavailable or offline/privacy is on.
+  fallback_engine: str = "sapi"
+  edge_voice: str = "en-GB-RyanNeural"
+  edge_rate: str = "+0%"
+  edge_pitch: str = "+0Hz"
+  edge_timeout_s: float = 20.0
+  # SAPI fallback settings.
   rate: int = 175
   volume: float = 1.0
   voice: str = ""
@@ -586,6 +596,27 @@ def _validate(settings):
   _require(0 <= llm.max_retries <= 3, "[llm] max_retries must be 0-3")
 
   tts = settings.tts
+  _require(
+      tts.engine in {"edge", "sapi"},
+      "[tts] engine must be edge or sapi",
+  )
+  _require(
+      tts.fallback_engine in {"sapi", "none"},
+      "[tts] fallback_engine must be sapi or none",
+  )
+  _require(bool(tts.edge_voice), "[tts] edge_voice must not be empty")
+  _require(
+      re.fullmatch(r"[+-]\d{1,3}%", tts.edge_rate) is not None,
+      "[tts] edge_rate must look like +0% or -10%",
+  )
+  _require(
+      re.fullmatch(r"[+-]\d{1,3}Hz", tts.edge_pitch) is not None,
+      "[tts] edge_pitch must look like +0Hz or -5Hz",
+  )
+  _require(
+      2.0 <= tts.edge_timeout_s <= 60.0,
+      "[tts] edge_timeout_s must be 2-60",
+  )
   _require(80 <= tts.rate <= 400, "[tts] rate must be 80-400")
   _require(0.0 <= tts.volume <= 1.0, "[tts] volume must be 0-1")
 

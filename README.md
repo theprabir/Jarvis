@@ -7,7 +7,7 @@ interface; deterministic Python modules do the audio, routing and tool work.
 
 **Current status:** Phase 1 (stabilization) and feature sets **4.1 Voice
 Interface** through **4.14 Application Intelligence** complete, plus optional
-document OCR with confidence warnings, currently **v0.3.6** in the
+document OCR with confidence warnings, currently **v0.3.7** in the
 advanced feature line. v0.2.11 switches the local model to IBM
 Granite 4.0 1B Instruct Q4_K_M; v0.2.12 keeps the prompt prefix stable so
 llama.cpp can reuse its cache across turns; v0.3.0 adds the constrained
@@ -16,7 +16,8 @@ adds local visual intelligence; v0.3.3 adds a personal knowledge base with
 flashcards and spaced review; v0.3.4 adds deterministic proactive briefings
 and alerts; v0.3.5 adds bounded reliability telemetry, self-monitoring,
 capability discovery, offline/privacy/explain modes, configuration rollback
-and reversible-action undo; v0.3.6 adds passive wake-word activation. Phase 4.14 adds active-window detection,
+and reversible-action undo; v0.3.6 adds passive wake-word activation; v0.3.7
+adds natural Edge speech with a local SAPI fallback. Phase 4.14 adds active-window detection,
 clipboard assistance, confirmed browser actions, page summaries, screenshot
 OCR and application documentation search.
 JARVIS listens through the
@@ -34,7 +35,8 @@ passages, extracts dates, tables and action items, compares and converts
 documents, searches the web and answers only from the fetched evidence with
 sources, converts units and text, reports the weather, runs timers and
 persisted reminders, falls back to the local model for everything else, and
-speaks through an interruptible Windows SAPI voice. The 4.11 productivity
+speaks through an interruptible Microsoft Edge voice with a local Windows SAPI
+fallback. The 4.11 productivity
 suite adds local to-dos, deadlines, recurring tasks,
 validated to-do tools, deterministic date parsing and daily or weekly
 planning, local notes with quick capture and full-text search, daily habits
@@ -56,15 +58,15 @@ project progress and suggested next actions (see
 - `llama-server.exe` on `PATH` (existing llama.cpp installation; do **not**
   replace it with `llama-cpp-python`)
 - `models/granite-4.0-1b-Q4_K_M.gguf`
-- A microphone and speakers; speech output needs a Windows SAPI voice
-  (Microsoft David or Zira ship with Windows)
+- A microphone and speakers. Natural speech uses Microsoft Edge TTS over the
+  network; offline/privacy mode needs a Windows SAPI voice (Microsoft David or
+  Zira ship with Windows)
 - OCR needs Windows and an installed Windows OCR language pack; `en-US` is
   available on most English installations
 - 8 GB RAM target machine. Measured: ~1.16 GB benchmark with the LLM loaded;
-  ~1.30 GB combined with the small Vosk voice model and passive wake detector.
-  Windows SAPI adds roughly 29 MB, so the full text-to-speech voice path can
-  reach ~1.32 GB; the planned natural-voice backend uses Edge TTS with SAPI
-  only as fallback.
+  ~1.29 GB for the full Edge + Vosk + passive wake voice path. The context
+  default is 1536 tokens to leave room for the natural-voice modules. SAPI is
+  loaded lazily only for offline/privacy fallback, adding roughly 29 MB then.
 
 ## Installation
 
@@ -99,7 +101,7 @@ All runtime settings live in `config/settings.toml`:
 | `[app]` | Log level and log directory |
 | `[llama]` | Executable, model path, host/port, context, KV cache type, threads, batch sizes, slots, startup timeout |
 | `[llm]` | Connect/read timeouts, max tokens, temperature, retries |
-| `[tts]` | Speech flag, rate (words/minute), volume, voice name substring |
+| `[tts]` | Engine (`edge` or `sapi`), fallback, Edge voice/prosody/timeout, SAPI rate, volume and voice substring |
 | `[voice]` | Voice mode, microphone, push-to-talk, passive wake word, VAD, silence/record limits, Vosk model path |
 | `[conversation]` | Multi-turn context, answer mode, token limits, summarization, history database |
 | `[tools]` | File sandbox root, read/search limits, allowed applications and commands |
@@ -133,6 +135,16 @@ produces fragmented transcripts. `input_device = ""` means the system default
 microphone; set it to a name substring (for example `"USB"`) to pick another
 device. `ptt_key` takes any `keyboard` hotkey string.
 
+Speech defaults to `engine = "edge"` with `edge_voice =
+"en-GB-RyanNeural"`. Edge speech sends the spoken reply text to Microsoft;
+the local model, microphone audio and stored data stay on this machine. If
+Edge is unreachable, speech falls back automatically to SAPI. `/offline on`
+and `/privacy on` force SAPI and never send reply text to Edge. Set
+`engine = "sapi"` to stay local all the time. `edge_rate` and `edge_pitch`
+accept Edge prosody strings such as `"+10%"` and `"-5Hz"`; `rate`, `volume`
+and `voice` control the SAPI fallback. `/voices` lists the configured Edge
+voice and installed SAPI voices.
+
 Transcription accuracy is set by the Vosk model. Both models were measured
 here with SAPI-synthesized sentences (two voices, 20 clips):
 
@@ -154,7 +166,7 @@ Every request carries the recent exchanges (up to `max_turns`), so follow-ups,
 pronouns and references resolve against what was already said. Older exchanges
 are compressed into a short summary instead of being dropped; if that summary
 request fails, an extractive summary is used. Only `max_context_chars` of
-transcript is sent, which keeps requests inside the 2048-token context.
+transcript is sent, which keeps requests inside the 1536-token context.
 
 The system prompt and stored transcript stay byte-identical between turns. The
 mutable summary and learned memory are sent in one trailing system message
@@ -1216,11 +1228,11 @@ The server is launched with:
 
 ```text
 llama-server -m models/...gguf --host 127.0.0.1 --port 8080 \
-  -c 2048 -t 2 -tb 2 -b 64 -ub 64 -np 1 -ngl 0
+  -c 1536 -t 2 -tb 2 -b 64 -ub 64 -np 1 -ngl 0
 ```
 
 `-np 1` matters: llama.cpp otherwise defaults to several parallel slots, which
-splits the 2048-token context and leaves each request far less room.
+splits the 1536-token context and leaves each request far less room.
 
 ## Run
 
@@ -1242,7 +1254,8 @@ Voice mode is the default. JARVIS prints a short greeting, then waits:
   push-to-talk while JARVIS talks also cuts it off and starts listening.
 - You can type at the `You:` prompt at any time; typed and spoken requests share
   the same conversation state.
-- `/stop` clears a pending interrupt and `/voices` lists installed SAPI voices.
+- `/stop` clears a pending interrupt and `/voices` lists the configured Edge
+  voice plus installed SAPI fallback voices.
 - `/wake on|off|status` controls passive wake-word listening in voice mode.
 - `/new` starts a fresh conversation, `/mode short|detailed|technical` changes
   how much JARVIS says, `/history` shows recent exchanges, `/intent TEXT` shows
@@ -1379,7 +1392,8 @@ brain/output_parser.py  Structured chat completion parsing
 brain/errors.py         LLM error hierarchy
 voice/audio.py          Microphone capture, resampling, VAD segmentation
 voice/stt.py            Vosk offline transcription
-voice/tts.py            Interruptible Windows SAPI speech
+voice/tts.py            Interruptible SAPI speech and lazy fallback wrapper
+voice/edge_tts.py       Natural Edge TTS synthesis and interruptible playback
 voice/wake.py           Passive Vosk wake-word detector and background listener
 voice/interface.py      Wake/PTT loop, barge-in, text fallback
 voice/errors.py         Voice error hierarchy
@@ -1481,11 +1495,12 @@ logs/                   Runtime logs (git-ignored)
   no shell and a timeout, which is not an operating-system isolation boundary.
   Git support is read-only and never commits.
 - The local model is Granite 4.0 1B Q4_K_M, a 1.6B-parameter CPU model. At
-  2048 context with a q8_0 KV cache the server uses about 1.12 GB of working
+  1536 context with a q8_0 KV cache the server uses about 1.10 GB of working
   set and generates roughly 7–8 tokens/s in steady state on this machine.
   Longer contexts or an f16 cache increase memory and prefill time, so the
-  2048-token setting is intentional. The deterministic router handles tools;
-  native model tool calling is not enabled.
+  1536-token setting is intentional and leaves room for Edge voice modules.
+  The deterministic router handles tools; native model tool calling is not
+  enabled.
 - OCR is optional and uses the built-in Windows OCR engine, so it needs
   Windows and the matching OCR language pack. It reads scanned PDF pages up to
   `ocr_max_pages` and image files; low-resolution, rotated or unusual-font
@@ -1558,5 +1573,7 @@ logs/                   Runtime logs (git-ignored)
 - Generation runs at ~5 tok/s on this CPU, so a 250-token detailed answer
   takes about 50 seconds; a reply that hits its limit is continued once,
   not generated without bound.
-- Speech output is verified functionally (SAPI speaks, interruption at ~0.8 s),
-  but audio quality and volume must be confirmed by ear on the target machine.
+- Speech output is verified functionally (SAPI speaks, interruption at ~0.8 s;
+  Edge synthesis and decoding were verified), but audio quality and volume
+  must be confirmed by ear on the target machine. Edge needs internet access;
+  when it is unavailable the first reply may pause while SAPI loads.

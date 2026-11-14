@@ -19,7 +19,7 @@ from core.logger import setup_logging
 from core.assistant import Assistant
 from core.server_manager import LlamaServer, ServerError
 from voice.errors import SpeechError, VoiceError
-from voice.tts import WindowsVoice
+from voice.tts import FallbackVoice, WindowsVoice
 
 log = logging.getLogger(__name__)
 
@@ -27,16 +27,37 @@ EXIT_COMMANDS = {"exit", "quit", "bye"}
 
 
 def build_speaker(settings):
-  """Create the persistent SAPI voice, or None when speech is disabled."""
+  """Create the configured speech engine, or None when speech is disabled."""
   if not settings.tts.enabled:
     return None
+  if settings.tts.engine == "sapi":
+    try:
+      speaker = WindowsVoice(settings.tts)
+    except SpeechError as exc:
+      log.error("Speech output unavailable: %s", exc)
+      print(f"[Warning] Speech output disabled: {exc}")
+      return None
+    log.info("Speech output ready: %s", speaker.description or "default voice")
+    return speaker
+
   try:
-    speaker = WindowsVoice(settings.tts)
-  except SpeechError as exc:
-    log.error("Speech output unavailable: %s", exc)
-    print(f"[Warning] Speech output disabled: {exc}")
+    from voice.edge_tts import EdgeVoice
+
+    primary = EdgeVoice(settings.tts)
+  except Exception as exc:
+    log.error("Natural speech unavailable: %s", exc)
+    print(f"[Warning] Natural speech unavailable: {exc}")
     return None
-  log.info("Speech output ready: %s", speaker.description or "default voice")
+
+  fallback_factory = None
+  if settings.tts.fallback_engine == "sapi":
+    fallback_factory = lambda: WindowsVoice(settings.tts)
+  speaker = FallbackVoice(primary, fallback_factory)
+  log.info(
+      "Speech output ready: %s (local fallback: %s)",
+      speaker.description,
+      "SAPI" if fallback_factory is not None else "none",
+  )
   return speaker
 
 
@@ -84,6 +105,9 @@ def run(settings):
 
   speaker = build_speaker(settings)
   assistant = Assistant(settings)
+  # Offline and privacy modes must never send spoken text to Edge.
+  if speaker is not None and hasattr(speaker, "set_offline_check"):
+    speaker.set_offline_check(assistant.speech_offline)
   assistant.set_notifier(lambda text: speak(text, speaker))
   try:
     if settings.voice.enabled:

@@ -1,6 +1,6 @@
 """Multi-turn conversation state: history, compression and answer modes.
 
-The model has a 2048-token context shared with the reply budget, so only the
+The model has a 1536-token context shared with the reply budget, so only the
 most recent exchanges are sent verbatim. Older ones are compressed into a short
 summary by the model itself, with a deterministic extract as a fallback.
 """

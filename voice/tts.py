@@ -1,15 +1,20 @@
-"""Interruptible speech output through Windows SAPI.
+"""Speech output engines and fallback handling.
+
+Natural speech is provided by :mod:`voice.edge_tts`; Windows SAPI remains the
+local fallback and the only engine used in offline/privacy modes.
 
 ``pyttsx3`` starts a new engine for every utterance (~3.5 s on this machine)
 and cannot cancel playback cleanly. Talking to ``SAPI.SpVoice`` directly
 keeps one voice object alive: speech starts in a few milliseconds and can be
-purged mid-sentence for barge-in.
+purged mid-sentence for barge-in. SAPI is created lazily by
+:class:`FallbackVoice`, so the normal Edge path does not pay its memory cost.
 """
 
 from __future__ import annotations
 
 import logging
 import re
+import threading
 
 from voice.errors import SpeechError
 
@@ -132,3 +137,92 @@ class WindowsVoice:
   def close(self):
     self.stop()
     self._voice = None
+
+
+class FallbackVoice:
+  """Use a primary speech engine with a lazy local fallback.
+
+  SAPI is created only when Edge fails or when offline/privacy mode is active.
+  That keeps the default natural-voice path from loading the extra SAPI
+  libraries and voices at startup.
+  """
+
+  def __init__(self, primary, fallback_factory=None, offline_check=None):
+    self.primary = primary
+    self.description = getattr(primary, "description", "speech output")
+    self._fallback_factory = fallback_factory
+    self._fallback = None
+    self._offline_check = offline_check
+    self._lock = threading.Lock()
+
+  def set_offline_check(self, check):
+    """Set a callable that returns True when local speech is required."""
+    self._offline_check = check
+
+  def _local_required(self):
+    if self._offline_check is None:
+      return False
+    try:
+      return bool(self._offline_check())
+    except Exception:
+      log.debug("Could not read local-speech mode", exc_info=True)
+      return False
+
+  def _get_fallback(self):
+    if self._fallback_factory is None:
+      return None
+    with self._lock:
+      if self._fallback is None:
+        self._fallback = self._fallback_factory()
+      return self._fallback
+
+  def speak(self, text, should_stop=None):
+    """Speak with the primary engine, falling back once on failure."""
+    if should_stop is not None and should_stop():
+      return
+    if not self._local_required():
+      try:
+        self.primary.speak(text, should_stop)
+        return
+      except Exception as exc:
+        log.warning(
+            "Natural speech unavailable (%s); falling back to local speech",
+            exc,
+        )
+        if should_stop is not None and should_stop():
+          return
+    fallback = self._get_fallback()
+    if fallback is None:
+      raise SpeechError(
+          "Natural speech is unavailable and no local fallback is configured"
+      )
+    fallback.speak(text, should_stop)
+
+  def stop(self):
+    try:
+      self.primary.stop()
+    except Exception:
+      log.debug("Could not stop primary speech", exc_info=True)
+    if self._fallback is not None:
+      self._fallback.stop()
+
+  def close(self):
+    self.stop()
+    if self._fallback is not None:
+      self._fallback.close()
+    try:
+      self.primary.close()
+    except Exception:
+      log.debug("Could not close primary speech", exc_info=True)
+
+  def available_voices(self):
+    """List the configured Edge voice and installed SAPI fallback voices."""
+    names = []
+    getter = getattr(self.primary, "available_voices", None)
+    if callable(getter):
+      try:
+        names.extend(getter())
+      except Exception:
+        log.debug("Could not list primary voices", exc_info=True)
+    names.extend(f"SAPI: {name}" for name in WindowsVoice.available_voices())
+    return names or ["none"]

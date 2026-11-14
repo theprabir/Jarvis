@@ -1036,6 +1036,12 @@ class Assistant:
         pass
     return bool(getattr(self._settings.reliability, name, False))
 
+  def speech_offline(self):
+    """Return True when speech must stay on the local SAPI engine."""
+    return self._reliability_mode("offline") or self._reliability_mode(
+        "privacy"
+    )
+
   def _record_tool_event(self, name, arguments, result, duration_ms):
     service = self._get_reliability()
     if service is None:

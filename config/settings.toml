@@ -16,7 +16,9 @@ model_path = "models/granite-4.0-1b-Q4_K_M.gguf"
 host = "127.0.0.1"
 port = 8080
 # Starting values from the specification; benchmark before increasing.
-context_size = 2048
+# Natural Edge voice adds about 14 MB of Python modules, so 1536 keeps the
+# full voice path inside the 1.3 GB target. Raising this increases memory.
+context_size = 1536
 # Quantized KV cache keeps the larger model inside the 1.3 GB target.
 kv_cache_type = "q8_0"
 threads = 2
@@ -41,9 +43,22 @@ max_retries = 1
 
 [tts]
 enabled = true
+# edge = natural Microsoft Edge voice over the network (default).
+# sapi = local Windows voice only. Edge automatically falls back to SAPI when
+# it is unavailable; offline and privacy modes always force the local voice.
+engine = "edge"
+fallback_engine = "sapi"
+# Run `edge-tts --list-voices` to see other names, for example en-US-AndrewNeural.
+edge_voice = "en-GB-RyanNeural"
+# Prosody strings accepted by Edge TTS. Keep the sign and unit.
+edge_rate = "+0%"
+edge_pitch = "+0Hz"
+# Network synthesis timeout per sentence.
+edge_timeout_s = 20.0
+# SAPI fallback: words per minute, volume and an optional voice id substring.
 rate = 175
 volume = 1.0
-# Empty string = Windows default voice. An installed SAPI voice id may be used.
+# Empty string = Windows default SAPI voice.
 voice = ""
 
 [voice]
@@ -87,7 +102,7 @@ mode = "short"
 # Verbatim exchanges kept in context, and when older ones get summarized.
 max_turns = 8
 summarize_after = 12
-# Character budget for the messages sent to the model (context is 2048 tokens).
+# Character budget for the messages sent to the model (context is 1536 tokens).
 max_context_chars = 3500
 # Per-mode reply limits; this CPU generates roughly 5-10 tokens per second.
 # They are sized so an answer finishes instead of being cut mid-sentence.

@@ -2,8 +2,11 @@
 httpx>=0.27.0
 psutil>=5.9.0
 
-# Speech output: Windows SAPI through COM. One persistent voice object,
+# Speech output: natural Microsoft Edge TTS over the network, with Windows
+# SAPI through COM as the local fallback. One persistent SAPI object is
 # interruptible mid-sentence (pyttsx3 re-initializes for every utterance).
+edge-tts>=7.0.0
+miniaudio>=1.61
 comtypes>=1.2.0
 
 # Voice input: microphone capture, framing, VAD and offline transcription.

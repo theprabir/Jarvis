@@ -7,6 +7,63 @@ all feature sets in a phase increments the middle number and resets the patch.
 feature sets in this level increment the patch (v0.2.1, …). **v0.3.0** begins
 the advanced line with feature set 4.15.
 
+## v0.3.7 — 2026-11-14
+
+**Feature set 4.22 Natural Voice**
+
+### Implemented functionality
+
+- **Edge TTS default** — speech now uses Microsoft Edge's neural voices,
+  defaulting to `en-GB-RyanNeural`, for substantially more natural output than
+  SAPI. The spoken text is sent to Microsoft; microphone audio, the local model
+  and stored data stay on this machine.
+- **Lazy SAPI fallback** — `FallbackVoice` creates the SAPI engine only when
+  Edge fails or when local speech is required. The normal Edge path no longer
+  loads the extra SAPI libraries and voices at startup.
+- **Offline and privacy enforcement** — `Assistant.speech_offline()` makes
+  `/offline on` and `/privacy on` bypass Edge entirely and use SAPI. This is
+  checked on every utterance, so changing modes takes effect immediately.
+- **Sentence-level streaming** — replies are cleaned and split into sentences,
+  synthesized and played in order. The first words start without waiting for
+  the entire reply, and Escape, push-to-talk or a new typed command interrupt
+  playback between chunks.
+- **Audio handling** — Edge MP3 is decoded to mono 24 kHz PCM with `miniaudio`,
+  scaled by the configured volume and played through `sounddevice`.
+- **Timeout and failure handling** — network synthesis has a configurable
+  per-sentence timeout. Timeouts, missing packages, decode errors and playback
+  errors surface as `SpeechError`, which triggers the local fallback.
+- **Voice listing** — `/voices` lists the configured Edge voice and installed
+  SAPI fallback voices.
+- **Memory budget** — the llama context default is reduced from 2048 to 1536
+  tokens so the full Edge voice path stays under 1.3 GB. The setting remains
+  configurable in `[llama]`.
+- **Configuration** — `[tts]` adds `engine`, `fallback_engine`, `edge_voice`,
+  `edge_rate`, `edge_pitch` and `edge_timeout_s`, with validation. Existing
+  SAPI `rate`, `volume` and `voice` settings remain.
+- **Dependencies** — added `edge-tts` and `miniaudio`; SAPI through `comtypes`
+  remains the local fallback.
+
+### Important files
+
+- New: `voice/edge_tts.py`, `tests/test_natural_voice.py`
+- Modified: `voice/tts.py`, `voice/interface.py`, `main.py`, `core/config.py`,
+  `core/assistant.py`, `core/conversation.py`, `config/settings.toml`,
+  `requirements.txt`, `README.md`
+
+### Testing status
+
+- Focused natural-voice, voice and wake suite: **61 tests, OK**.
+- Real Edge synthesis and MP3 decode verified with the configured
+  `en-GB-RyanNeural` voice; playback was mocked for the memory test.
+- Full Edge voice path with Vosk, wake listening and the LLM server measured
+  **1291.4 MB** working set (Python 195.7 MB + server 1095.8 MB) at 1536
+  context, inside the 1,300 MB target. The same path measured 1312.4 MB at the
+  old 2048 context.
+- Full suite: **679 tests, OK**. Text-only benchmark: **1136.4 MB peak**
+  (Python 35.8 MB + server 1095.6 MB) at 1536 context.
+- `compileall` and `git diff --check` pass.
+- No Git commit or push was made.
+
 ## v0.3.6 — 2026-11-13
 
 **Feature set 4.21 Wake-Word Activation**

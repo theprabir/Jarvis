@@ -43,7 +43,7 @@ def _escape_was_pressed():
 
 
 class VoiceInterface:
-  """Interactive voice session bound to one microphone and one SAPI voice."""
+  """Interactive voice session bound to one microphone and one speech engine."""
 
   def __init__(self, settings, respond, tts=None):
     self.settings = settings
@@ -369,6 +369,16 @@ class VoiceInterface:
       self._resume_wake()
 
   def _voice_names(self):
+    if self._tts is not None:
+      getter = getattr(self._tts, "available_voices", None)
+      if callable(getter):
+        try:
+          names = getter()
+        except Exception:
+          log.debug("Could not list speech voices", exc_info=True)
+        else:
+          if names:
+            return names
     return WindowsVoice.available_voices() or ["none"]
 
   def _close(self):

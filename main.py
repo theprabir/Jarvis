@@ -12,12 +12,12 @@ import dataclasses
 import logging
 import sys
 
-from brain.llm_client import close_client
-from core.brain import ask_brain
+from brain.llm_client import LLMClient
 from core.config import ConfigError, load_settings
 from core.logger import setup_logging
 from core.assistant import Assistant
-from core.server_manager import LlamaServer, ServerError
+from core.model_manager import ModelManager
+from core.server_manager import ServerError
 from voice.errors import SpeechError, VoiceError
 from voice.tts import FallbackVoice, WindowsVoice
 
@@ -95,16 +95,16 @@ def run_cli(settings, speaker, assistant):
 
 
 def run(settings):
-  server = LlamaServer(settings.llama, settings.app.log_dir)
   try:
-    server.ensure_running()
+    model = ModelManager(settings)
   except ServerError as exc:
     log.error("LLM server unavailable: %s", exc)
     print(f"[Error] {exc}")
     return 1
+  client = LLMClient(settings.llama, settings.llm, lifecycle=model)
 
   speaker = build_speaker(settings)
-  assistant = Assistant(settings)
+  assistant = Assistant(settings, client=client)
   # Offline and privacy modes must never send spoken text to Edge.
   if speaker is not None and hasattr(speaker, "set_offline_check"):
     speaker.set_offline_check(assistant.speech_offline)
@@ -128,9 +128,9 @@ def run(settings):
     print("\nJarvis: Shutting down.")
     return 0
   finally:
-    close_client()
-    server.stop()
     assistant.close()
+    client.close()
+    model.close()
     if speaker is not None:
       speaker.close()
 

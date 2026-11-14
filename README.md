@@ -7,7 +7,7 @@ interface; deterministic Python modules do the audio, routing and tool work.
 
 **Current status:** Phase 1 (stabilization) and feature sets **4.1 Voice
 Interface** through **4.14 Application Intelligence** complete, plus optional
-document OCR with confidence warnings, currently **v0.3.7** in the
+document OCR with confidence warnings, currently **v0.3.8** in the
 advanced feature line. v0.2.11 switches the local model to IBM
 Granite 4.0 1B Instruct Q4_K_M; v0.2.12 keeps the prompt prefix stable so
 llama.cpp can reuse its cache across turns; v0.3.0 adds the constrained
@@ -17,7 +17,8 @@ flashcards and spaced review; v0.3.4 adds deterministic proactive briefings
 and alerts; v0.3.5 adds bounded reliability telemetry, self-monitoring,
 capability discovery, offline/privacy/explain modes, configuration rollback
 and reversible-action undo; v0.3.6 adds passive wake-word activation; v0.3.7
-adds natural Edge speech with a local SAPI fallback. Phase 4.14 adds active-window detection,
+adds natural Edge speech with a local SAPI fallback; v0.3.8 loads the language
+model only when needed and unloads it after idle. Phase 4.14 adds active-window detection,
 clipboard assistance, confirmed browser actions, page summaries, screenshot
 OCR and application documentation search.
 JARVIS listens through the
@@ -63,10 +64,11 @@ project progress and suggested next actions (see
   Zira ship with Windows)
 - OCR needs Windows and an installed Windows OCR language pack; `en-US` is
   available on most English installations
-- 8 GB RAM target machine. Measured: ~1.16 GB benchmark with the LLM loaded;
-  ~1.29 GB for the full Edge + Vosk + passive wake voice path. The context
-  default is 1536 tokens to leave room for the natural-voice modules. SAPI is
-  loaded lazily only for offline/privacy fallback, adding roughly 29 MB then.
+- 8 GB RAM target machine. Idle JARVIS with wake word and Vosk is roughly
+  **200 MB** because `llama-server` is unloaded. An active Edge voice request
+  is roughly **1.29 GB** while the model is loaded. The context default is
+  1536 tokens to leave room for the natural-voice modules. SAPI is loaded
+  lazily only for offline/privacy fallback, adding roughly 29 MB then.
 
 ## Installation
 
@@ -99,7 +101,7 @@ All runtime settings live in `config/settings.toml`:
 | Section | Purpose |
 | --- | --- |
 | `[app]` | Log level and log directory |
-| `[llama]` | Executable, model path, host/port, context, KV cache type, threads, batch sizes, slots, startup timeout |
+| `[llama]` | Executable, model path, host/port, context, KV cache type, threads, batch sizes, slots, startup timeout, lazy start and idle unload |
 | `[llm]` | Connect/read timeouts, max tokens, temperature, retries |
 | `[tts]` | Engine (`edge` or `sapi`), fallback, Edge voice/prosody/timeout, SAPI rate, volume and voice substring |
 | `[voice]` | Voice mode, microphone, push-to-talk, passive wake word, VAD, silence/record limits, Vosk model path |
@@ -1224,7 +1226,7 @@ set BRAVE_API_KEY=...
 .venv\Scripts\python main.py
 ```
 
-The server is launched with:
+When a model request needs it, the server is launched with:
 
 ```text
 llama-server -m models/...gguf --host 127.0.0.1 --port 8080 \
@@ -1232,7 +1234,11 @@ llama-server -m models/...gguf --host 127.0.0.1 --port 8080 \
 ```
 
 `-np 1` matters: llama.cpp otherwise defaults to several parallel slots, which
-splits the 1536-token context and leaves each request far less room.
+splits the 1536-token context and leaves each request far less room. With the
+default `lazy_start = true`, no server is launched at startup. It starts on the
+first model request and is stopped after 180 seconds without one. Set
+`lazy_start = false` for the old always-loaded behavior, or `idle_unload_s = 0`
+to keep it loaded after the first request.
 
 ## Run
 
@@ -1245,7 +1251,11 @@ Voice mode is the default. JARVIS prints a short greeting, then waits:
 - While idle it passively listens for **“Hey Jarvis”** (configurable). Say the
   phrase, wait for the short chime, then speak your request. Passive audio is
   processed in memory only; it is not saved or sent anywhere. Use `/wake off`
-  to disable passive listening, or `/wake status` to inspect it.
+  to disable passive listening, or `/wake status` to inspect it. Passive
+  listening does not require the language model to be loaded.
+- The first model answer after startup, or after 180 seconds idle, takes longer
+  because `llama-server` is started on demand. Local commands, timers,
+  reminders and wake detection continue to work while it is unloaded.
 - Press **Ctrl+Space** (or Enter on an empty console line) and speak. Audio is
   captured until you pause, transcribed offline, answered by the local model
   and spoken aloud.
@@ -1387,7 +1397,8 @@ core/timers.py          In-memory timers, persisted reminders and notifications
 core/weather.py         Open-Meteo geocoding and current conditions
 screenshots/            Screen captures (git-ignored)
 core/benchmark.py       RAM and latency baseline
-brain/llm_client.py     Persistent HTTPX client
+core/model_manager.py   On-demand llama-server startup and idle unloading
+brain/llm_client.py     Persistent HTTPX client with request lifecycle hooks
 brain/output_parser.py  Structured chat completion parsing
 brain/errors.py         LLM error hierarchy
 voice/audio.py          Microphone capture, resampling, VAD segmentation
@@ -1577,3 +1588,7 @@ logs/                   Runtime logs (git-ignored)
   Edge synthesis and decoding were verified), but audio quality and volume
   must be confirmed by ear on the target machine. Edge needs internet access;
   when it is unavailable the first reply may pause while SAPI loads.
+- On-demand loading trades idle memory for first-response latency. The first
+  model request can take roughly 5–15 seconds while the server loads; later
+  requests are faster. A server started manually or reused on port 8080 is not
+  auto-unloaded because JARVIS does not own that process.

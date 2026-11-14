@@ -44,6 +44,10 @@ class LlamaConfig:
   gpu_layers: int = 0
   startup_timeout_s: float = 120.0
   auto_start: bool = True
+  # Start the model only when a request needs it, then stop it after idle.
+  lazy_start: bool = True
+  # 0 disables idle unloading; otherwise it is a number of seconds.
+  idle_unload_s: float = 180.0
 
   @property
   def base_url(self) -> str:
@@ -587,6 +591,15 @@ def _validate(settings):
   _require(1 <= llama.parallel_slots <= 4, "[llama] parallel_slots must be 1-4")
   _require(llama.gpu_layers >= 0, "[llama] gpu_layers must be >= 0")
   _require(llama.startup_timeout_s > 0, "[llama] startup_timeout_s must be > 0")
+  _require(
+      isinstance(llama.lazy_start, bool),
+      "[llama] lazy_start must be true or false",
+  )
+  _require(
+      llama.idle_unload_s == 0
+      or 30.0 <= llama.idle_unload_s <= 86_400.0,
+      "[llama] idle_unload_s must be 0 or 30-86400",
+  )
 
   llm = settings.llm
   _require(llm.connect_timeout_s > 0, "[llm] connect_timeout_s must be > 0")

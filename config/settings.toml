@@ -31,6 +31,12 @@ gpu_layers = 0
 startup_timeout_s = 120.0
 # Reuse an already running server on this port instead of launching one.
 auto_start = true
+# Start the model only when a request needs it. Wake-word listening and local
+# commands keep working while the model is unloaded.
+lazy_start = true
+# Stop the model after this many seconds without a request. 0 keeps it loaded.
+# The next model request reloads it and pays the startup cost again.
+idle_unload_s = 180.0
 
 [llm]
 connect_timeout_s = 5.0

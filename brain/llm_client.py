@@ -28,11 +28,14 @@ _CLIENT = None
 class LLMClient:
   """Minimal OpenAI-compatible client for a single local server."""
 
-  def __init__(self, llama_config, llm_config, transport=None):
+  def __init__(
+      self, llama_config, llm_config, transport=None, lifecycle=None
+  ):
     self._base_url = llama_config.base_url.rstrip("/")
     self._max_tokens = llm_config.max_tokens
     self._temperature = llm_config.temperature
     self._max_retries = llm_config.max_retries
+    self._lifecycle = lifecycle
 
     timeout = httpx.Timeout(
         connect=llm_config.connect_timeout_s,
@@ -74,10 +77,30 @@ class LLMClient:
       raise LLMResponseError("Server properties are not valid JSON") from exc
 
   def chat(self, messages, max_tokens=None, temperature=None):
-    """Send a chat completion request and return a ChatResult."""
+    """Send a chat completion request and return a ChatResult.
+
+    When a lifecycle manager is attached, the local server is started before
+    the request and marked active so idle unload cannot stop it mid-request.
+    """
     if not messages:
       raise ValueError("messages must not be empty")
 
+    lifecycle = self._lifecycle
+    if lifecycle is not None:
+      try:
+        lifecycle.before_request()
+      except Exception as exc:
+        raise LLMConnectionError(
+            f"Cannot start the local language model: {exc}"
+        ) from exc
+    try:
+      return self._chat(messages, max_tokens, temperature)
+    finally:
+      if lifecycle is not None:
+        lifecycle.after_request()
+
+  def _chat(self, messages, max_tokens=None, temperature=None):
+    """Perform one chat request after lifecycle setup."""
     payload = {
         "messages": messages,
         "max_tokens": self._max_tokens if max_tokens is None else max_tokens,

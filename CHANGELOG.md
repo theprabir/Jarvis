@@ -7,6 +7,52 @@ all feature sets in a phase increments the middle number and resets the patch.
 feature sets in this level increment the patch (v0.2.1, …). **v0.3.0** begins
 the advanced line with feature set 4.15.
 
+## v0.3.8 — 2026-11-14
+
+**Feature set 4.23 On-Demand Model Lifecycle**
+
+### Implemented functionality
+
+- **Lazy model startup** — `main.py` no longer starts `llama-server` during
+  boot. `ModelManager` starts it only when an LLM request first needs it.
+  Wake-word listening, speech recognition, deterministic commands, timers,
+  reminders and local services continue without the model loaded.
+- **Idle unloading** — after `[llama] idle_unload_s` seconds without a model
+  request, the manager stops the server it owns. The next request starts it
+  again automatically. The default is 180 seconds.
+- **Active-request protection** — the LLM client marks a request active before
+  starting the model and clears it in `finally`, so the idle monitor cannot
+  stop the server mid-request. The monitor also rechecks under the load lock
+  before stopping.
+- **External server safety** — a server started manually or reused on the
+  configured port is not owned by JARVIS and is never auto-unloaded.
+- **Failure handling** — a model startup failure is translated into the normal
+  `LLMConnectionError` path, and the active-request count is released.
+- **Configuration** — `[llama] lazy_start = true` and `idle_unload_s = 180.0`,
+  with validation. Set `lazy_start = false` for the old startup behavior or
+  `idle_unload_s = 0` to keep the model loaded after first use.
+- **Lifecycle-aware client** — `LLMClient` accepts an optional lifecycle hook;
+  existing clients and tests continue to work without one.
+
+### Important files
+
+- New: `core/model_manager.py`, `tests/test_model_lifecycle.py`
+- Modified: `brain/llm_client.py`, `main.py`, `core/config.py`,
+  `config/settings.toml`, `README.md`
+
+### Testing status
+
+- Lifecycle and client tests: **29 tests, OK**.
+- Real integration check: no server at startup, first request loaded it,
+  the idle monitor stopped it after the test interval, and the next request
+  reloaded it. No `llama-server` process remained afterward.
+- Idle voice stack with Vosk and wake listening but no model: **182.3 MB**.
+- Active full voice path remains about **1291.4 MB** while the model is loaded.
+- Text-only baseline: **1138.7 MB peak** while the server is loaded; the
+  benchmark still starts its own server because it measures model performance.
+- Full suite: **692 tests, OK**. `compileall` and `git diff --check` pass.
+- No Git commit or push was made.
+
 ## v0.3.7 — 2026-11-14
 
 **Feature set 4.22 Natural Voice**
